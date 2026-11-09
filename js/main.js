@@ -585,6 +585,8 @@ const T = {
   endMargin: store.get('endMargin', 2),   // Train Endgame: trainer within this many discs of perfect
   endScores: store.get('endScores', END_SCORES.slice()), // ticked start scores
   lineId: 0,
+  reviewsOnly: store.get('reviewsOnly', false),
+  reviewPly: 0,           // move number of the reviewed position (cursor there)
   cap: store.get('trainCap', 3),          // seconds for Edax checks and play-on scores; 0 = none
   lineColor: BLACK,
   retrying: false,
@@ -886,27 +888,43 @@ function startLine() {
   ensureEngine();
   if (mode === 'endgame') { startEndgame(); return; }
 
-  const due = srsBook.due(prefColors());
-  if (due.length) {
-    const item = due[0];
+  const rev = nextReview(srsBook, prefColors());
+  if (rev) {
+    const { item } = rev;
     const { states: parsed, error } = parseTranscript(item.line);
     if (!error) {
       T.review = item;
       T.lineColor = item.color;
       states = parsed;
       cursor = states.length - 1;
+      T.reviewPly = cursor;
       render();
-      userTurn(`Review (${due.length} due): you play <b>${colorName(item.color)}</b>.`);
+      userTurn(`${rev.label}: you play <b>${colorName(item.color)}</b>.`);
       return;
     }
   }
   T.review = null;
+  if (T.reviewsOnly) { noReviews(); return; }
   T.lineColor = T.colorPref === 3 ? (Math.random() < 0.5 ? BLACK : WHITE) : T.colorPref;
   states = [initialState()];
   cursor = 0;
   render();
   if (cur().toMove === T.lineColor) userTurn(`New line: you play <b>${colorName(T.lineColor)}</b>.`);
   else trainerTurn();
+}
+
+// The position to review next: the first due one, or with "Reviews only" and none due, the
+// saved position seen longest ago. null if there is none. label: text for the feedback.
+function nextReview(srs, colors) {
+  const due = srs.due(colors);
+  if (due.length) return { item: due[0], label: `Review (${due.length} due)` };
+  if (!T.reviewsOnly) return null;
+  const saved = srs.saved(colors);
+  return saved.length ? { item: saved[0], label: `Review (none due; saved position seen longest ago, ${saved.length} saved)` } : null;
+}
+function noReviews() {
+  setFeedback('No saved positions to review yet. Untick <b>Reviews only</b> to train new lines.');
+  showButtons('btn-train-start');
 }
 
 // Train Endgame: a due review, otherwise a random start position with a ticked score.
@@ -923,12 +941,14 @@ function startEndgame() {
     userTurn(intro(`<b>${colorName(T.lineColor)}</b>`, cursor + 1));
     return true;
   };
-  const due = srsEnd.due([BLACK, WHITE]);
-  if (due.length) {
-    T.review = due[0];
-    if (play(due[0].line, (you, n) => `Review (${due.length} due): you play ${you}, move ${n}.`)) return;
+  const rev = nextReview(srsEnd, [BLACK, WHITE]);
+  if (rev) {
+    T.review = rev.item;
+    T.reviewPly = parseTranscript(rev.item.line).states.length - 1;
+    if (play(rev.item.line, (you, n) => `${rev.label}: you play ${you}, move ${n}.`)) return;
   }
   T.review = null;
+  if (T.reviewsOnly) { noReviews(); return; }
   if (!endPos) findEndPositions();
   if (endPos.error) { setFeedback('Could not read start positions from the book: ' + endPos.error, 'bad'); showButtons('btn-train-start'); return; }
   if (!endPos.scores) { T.phase = 'waiting'; showEndProgress(); showButtons(); return; }
@@ -1007,6 +1027,8 @@ function trainerTurn() {
   const st = cur();
   if (st.over) { endLine('Game over.'); return; }
   if (st.toMove === T.lineColor) { userTurn(); return; }
+  // Reviews only: the line ends once the reviewed position is answered.
+  if (T.reviewsOnly && T.review && cursor > T.reviewPly) { endLine('Review done.'); return; }
   if (mode === 'endgame') { endTrainerTurn(st); return; }
   const info = probe(st);
   if (!info) { endLine(OUT_OF_BOOK); return; }
@@ -1231,6 +1253,18 @@ for (const v of END_SCORES) {
   l.append(box, fmtScore(v));
   $('end-scores').appendChild(l);
 }
+// Deadline (date, local midnight): saved positions come up again by then at the latest.
+const DEFAULT_DEADLINE = '2026-11-25';
+function setDeadline(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text || '');
+  const ms = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime() : null;
+  srsBook.deadline = srsEnd.deadline = ms;
+}
+$('opt-deadline').value = store.get('deadline', DEFAULT_DEADLINE);
+setDeadline($('opt-deadline').value);
+$('opt-deadline').onchange = (e) => { store.set('deadline', e.target.value); setDeadline(e.target.value); renderTrainStats(); };
+$('opt-reviews-only').checked = T.reviewsOnly;
+$('opt-reviews-only').onchange = (e) => { T.reviewsOnly = e.target.checked; store.set('reviewsOnly', T.reviewsOnly); };
 $('opt-train-cap').value = String(T.cap);
 $('opt-train-cap').onchange = (e) => { T.cap = Number(e.target.value); store.set('trainCap', T.cap); };
 $('btn-train-start').onclick = startLine;
