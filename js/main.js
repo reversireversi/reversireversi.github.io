@@ -4,7 +4,7 @@ import {
 } from './reversi.js';
 import { Engine, toEdaxBoard } from './engine.js';
 import { Book } from './book.js';
-import { Repetition, opponentCandidates, pickRandom } from './train.js';
+import { Repetition, opponentCandidates, withinMargin, pickRandom } from './train.js';
 import { dbGet, dbPut, dbDelete, askPersist } from './device-store.js';
 
 // Offline support and "Add to Home Screen" app (see sw.js).
@@ -302,7 +302,7 @@ function umigameReady(b) {
   }
   delete $('book-meta').dataset.umi;
   renderBookMeta();
-  if (T.phase === 'wrong' && T.anchor && T.anchor.marks) { // add the numbers to the mistake view
+  if (mode === 'train' && T.phase === 'wrong' && T.anchor && T.anchor.marks) { // add the numbers to the mistake view
     const st = T.anchor.states[T.anchor.cursor], old = T.anchor.marks.list;
     const fresh = bookList(st, probe(st));
     for (const e of old) if (!fresh.find((f) => f.sq === e.sq)) fresh.push(e); // the wrong move's Edax score
@@ -333,7 +333,7 @@ function bookList(st, info) {
 }
 
 function paintBoard() {
-  if (mode === 'train') {
+  if (isTrain()) {
     if (!exploring()) return;
     for (const c of cells) c.classList.remove('wrong', 'right');
     if (T.phase === 'wrong' && atAnchor()) { paintAnchorMarks(); return; }
@@ -387,7 +387,8 @@ function updateBook() {
   const st = cur();
   const lines = $('book-lines');
   lines.innerHTML = '';
-  bookInfo = book && bookOn && !st.over ? book.probe(st.board, st.toMove) : null;
+  // Endgame training does not use the book after the start position.
+  bookInfo = book && bookOn && !st.over && mode !== 'endgame' ? book.probe(st.board, st.toMove) : null;
   if (!book) { setBookStatus('No book loaded. Your book is read in this browser only and never uploaded.'); return; }
   if (!bookOn) { setBookStatus('Book scores hidden'); return; }
   if (st.over) { setBookStatus('Game over'); return; }
@@ -441,7 +442,9 @@ async function openBook(buffer, name, fromDevice = false) {
   console.log(`Book loaded in ${Math.round(performance.now() - t)} ms`);
   updateBook();
   paintBoard();
-  if (mode === 'train' && T.phase === 'idle') { setFeedback('Book loaded. Press <b>Start</b>.'); renderTrainStats(); }
+  if (isTrain() && T.phase === 'idle') { setFeedback('Book loaded. Press <b>Start</b>.'); renderTrainStats(); }
+  endPos = null;
+  loadEndPositions(b);
 
   const saved = await dbGet('umi');
   if (book !== b) return;
@@ -464,6 +467,10 @@ async function openBook(buffer, name, fromDevice = false) {
       b.umiSaved = true;
       dbPut('umi', { id: b.id, data: b.umi.buffer });
     }
+    if (bookRemembered && endPos && endPos.scores && !b.endSaved) { // start positions found before that
+      b.endSaved = true;
+      dbPut('endpos', { id: b.id, moves: endPos.moves, lens: endPos.lens, scores: endPos.scores });
+    }
     askPersist();
   }
 }
@@ -485,6 +492,7 @@ $('book-file').onchange = async (e) => {
 $('btn-book-forget').onclick = async () => {
   await dbDelete('book');
   await dbDelete('umi');
+  await dbDelete('endpos');
   bookRemembered = false;
   renderRemember();
   $('book-note').textContent = 'Removed from this device. The book stays open until you reload.';
@@ -508,18 +516,24 @@ $('btn-book-forget').onclick = async () => {
 
 async function requestAnalysis() {
   const token = ++anaToken;
-  if (mode === 'train' && !exploring()) { edaxView = null; return; } // training draws its own feedback
+  if (isTrain() && !exploring()) { edaxView = null; return; } // training draws its own feedback
   edaxView = null;
   $('engine-lines').innerHTML = '';
   updateBook();
   paintBoard();
   // Playing on in Train: book scores if in book, otherwise Edax (always on there).
-  if (mode === 'train' && (bookInfo || (T.phase === 'wrong' && atAnchor()))) return;
-  if (!analysisOn && mode !== 'train') { if (engine) engine.cancel(); setEngineStatus('Off'); return; }
+  if (isTrain() && (bookInfo || (T.phase === 'wrong' && atAnchor()))) return;
+  if (!analysisOn && !isTrain()) { if (engine) engine.cancel(); setEngineStatus('Off'); return; }
   ensureEngine();
 
   const st = cur();
   if (st.over) { engine.cancel(); setEngineStatus('Game over'); return; }
+  if (mode === 'endgame') { // playing on in an endgame: exact scores
+    const r = await solve(st);
+    if (token !== anaToken || !r.moves) return;
+    showAnalysis(r.res, false);
+    return;
+  }
   const board = toEdaxBoard(st.board, st.toMove);
   if (mode === 'train') { // playing on: rising levels within the time cap
     const r = await cappedAnalyze(board, level, 60, T.cap * 1000, (step) => {
@@ -556,18 +570,28 @@ $('opt-edax').onchange = (e) => { analysisOn = e.target.checked; store.set('edax
 $('opt-level').onchange = (e) => { level = Number(e.target.value); store.set('level', level); requestAnalysis(); };
 
 // ---------- Training ----------
-let mode = 'analyse';
-const srs = new Repetition();
+let mode = 'analyse';            // analyse | train | endgame
+const isTrain = () => mode === 'train' || mode === 'endgame';
+// Separate review lists: book positions (Train) and endgame positions (Train Endgame).
+const srsBook = new Repetition();
+const srsEnd = new Repetition('ot.srsEnd');
+const srsNow = () => (mode === 'endgame' ? srsEnd : srsBook);
+const END_SCORES = [-6, -4, -2, 0, 2, 4, 6, 8];
 const T = {
   phase: 'idle',          // idle | user | checking | trainer | wrong | end
   colorPref: store.get('trainColor', 1), // 1 black, 2 white, 3 both
   margin: store.get('trainMargin', 2),
+  floor: store.get('trainFloor', null),   // trainer never plays a book move below this (null = no limit)
+  endMargin: store.get('endMargin', 2),   // Train Endgame: trainer within this many discs of perfect
+  endScores: store.get('endScores', END_SCORES.slice()), // ticked start scores
+  lineId: 0,
   cap: store.get('trainCap', 3),          // seconds for Edax checks and play-on scores; 0 = none
   lineColor: BLACK,
   retrying: false,
   review: null,           // review item being replayed, if any
   line: { correct: 0, total: 0 },
   session: { correct: 0, total: 0 },
+  endSession: { correct: 0, total: 0 },
   timer: 0,
   anchor: null,           // trained position saved at a mistake or line end: { states, cursor, marks }
 };
@@ -585,50 +609,62 @@ function showButtons(...ids) {
 }
 
 function renderTrainStats() {
-  const c = srs.count(prefColors());
-  const s = T.session;
-  $('train-stats').textContent = `Session: ${s.correct}/${s.total} correct`
-    + ` · Reviews due: ${c.due} · Saved positions: ${c.total}`;
+  const end = mode === 'endgame';
+  const c = srsNow().count(end ? [BLACK, WHITE] : prefColors());
+  const s = end ? T.endSession : T.session;
+  let text = `Session: ${s.correct}/${s.total} correct · Reviews due: ${c.due} · Saved positions: ${c.total}`;
+  if (end && endPos && endPos.scores) text += ` · Start positions with the ticked scores: ${endPool().length.toLocaleString()}`;
+  $('train-stats').textContent = text;
   renderMoveChart();
 }
 
 // ---------- Answers by move number (chart under the board) ----------
-const MC_MOVES = 40;
+// Train: moves 1-40; Train Endgame: moves 40-60.
+const mcRange = () => (mode === 'endgame' ? [40, 60] : [1, 40]);
 // c: correct (including correct with an Umigame warning), w: correct with warning, t: answers.
 const emptyStats = () => ({ c: new Array(61).fill(0), w: new Array(61).fill(0), t: new Array(61).fill(0) });
-const moveStats = { session: emptyStats(), all: store.get('moveStats', null) || emptyStats() };
-if (!moveStats.all.w) moveStats.all.w = new Array(61).fill(0); // saved before warnings were counted
+const moveStats = {
+  train: { session: emptyStats(), all: store.get('moveStats', null) || emptyStats(), key: 'moveStats' },
+  endgame: { session: emptyStats(), all: store.get('moveStatsEnd', null) || emptyStats(), key: 'moveStatsEnd' },
+};
+if (!moveStats.train.all.w) moveStats.train.all.w = new Array(61).fill(0); // saved before warnings were counted
+const statsNow = () => moveStats[mode === 'endgame' ? 'endgame' : 'train'];
 let mcView = store.get('mcView', 'session');
 
 // ply: move number of the user's answer (1..60).
 function recordMoveStat(ply, correct, warned = false) {
-  for (const s of [moveStats.session, moveStats.all]) {
+  const m = statsNow();
+  for (const s of [m.session, m.all]) {
     s.t[ply]++;
     if (correct) s.c[ply]++;
     if (correct && warned) s.w[ply]++;
   }
-  store.set('moveStats', moveStats.all);
+  store.set(m.key, m.all);
 }
 function acceptMoveStat(ply) { // a wrong answer counted as correct after all
-  for (const s of [moveStats.session, moveStats.all]) if (s.c[ply] < s.t[ply]) s.c[ply]++;
-  store.set('moveStats', moveStats.all);
+  const m = statsNow();
+  for (const s of [m.session, m.all]) if (s.c[ply] < s.t[ply]) s.c[ply]++;
+  store.set(m.key, m.all);
 }
 
 function renderMoveChart() {
-  const s = moveStats[mcView];
+  const s = statsNow()[mcView];
+  const [from, to] = mcRange();
+  const cols = `repeat(${to - from + 1}, 1fr)`;
   $('mc-session').classList.toggle('active', mcView === 'session');
   $('mc-all').classList.toggle('active', mcView === 'all');
   let max = 1;
-  for (let p = 1; p <= MC_MOVES; p++) max = Math.max(max, s.t[p]);
+  for (let p = from; p <= to; p++) max = Math.max(max, s.t[p]);
   const bars = $('mc-bars');
   bars.innerHTML = '';
+  bars.style.gridTemplateColumns = cols;
   const seg = (cls, n) => {
     const el = document.createElement('span');
     el.className = cls;
     el.style.height = `${(100 * n) / max}%`;
     return el;
   };
-  for (let p = 1; p <= MC_MOVES; p++) {
+  for (let p = from; p <= to; p++) {
     const t = s.t[p], c = s.c[p], w = s.w[p];
     const bar = document.createElement('div');
     bar.className = 'mc-bar' + (t ? '' : ' empty');
@@ -641,12 +677,16 @@ function renderMoveChart() {
     bars.appendChild(bar);
   }
   const axis = $('mc-axis');
-  if (!axis.childElementCount) {
-    for (let p = 1; p <= MC_MOVES; p++) {
+  if (axis.dataset.range !== `${from}-${to}`) {
+    axis.dataset.range = `${from}-${to}`;
+    axis.innerHTML = '';
+    axis.style.gridTemplateColumns = cols;
+    for (let p = from; p <= to; p++) {
       const l = document.createElement('span');
-      l.textContent = p === 1 || p % 5 === 0 ? String(p) : '';
+      l.textContent = p === from || p % 5 === 0 ? String(p) : '';
       axis.appendChild(l);
     }
+    $('mc-info').textContent = 'Tap or hover a bar for its numbers.';
   }
 }
 $('mc-session').onclick = () => { mcView = 'session'; store.set('mcView', mcView); renderMoveChart(); };
@@ -659,21 +699,132 @@ function clearMarks() {
 
 function setMode(m) {
   mode = m;
-  document.body.classList.toggle('training', m === 'train');
+  document.body.classList.toggle('training', isTrain());
+  document.body.classList.toggle('endgame', m === 'endgame');
   $('tab-analyse').classList.toggle('active', m === 'analyse');
   $('tab-train').classList.toggle('active', m === 'train');
+  $('tab-endgame').classList.toggle('active', m === 'endgame');
   clearTimeout(T.timer);
+  T.lineId++;
   T.phase = 'idle';
   T.anchor = null;
   T.last = null;
   clearMarks();
+  placeNav();
   if (m === 'train') {
     if (engine) engine.cancel();
     setFeedback(book ? 'Choose your colour, then press <b>Start</b>.' : 'Open your book (below), then press <b>Start</b>.');
     showButtons('btn-train-start');
     renderTrainStats();
+  } else if (m === 'endgame') {
+    if (engine) engine.cancel();
+    setFeedback(book
+      ? 'Tick the start scores you want, then press <b>Start</b>. Games start after move 39 or 40 of a book line and are played to the end with exact Edax scores.'
+      : 'Open your book (below): the start positions come from it. Then press <b>Start</b>.');
+    showButtons('btn-train-start');
+    if (book && !endPos) findEndPositions();
+    renderTrainStats();
   }
   render();
+}
+
+// On phones the ⏮ ◀ ▶ ⏭ row sits above the session stats while training (it is used when
+// playing on), and in its usual place in Analyse.
+const navEl = document.querySelector('.nav');
+const navHome = navEl.nextElementSibling;
+const phone = matchMedia('(max-width: 600px)');
+function placeNav() {
+  if (isTrain() && phone.matches) $('train-stats').before(navEl);
+  else navHome.before(navEl);
+}
+phone.addEventListener('change', placeNav);
+
+// ---------- Train Endgame: start positions and exact scores ----------
+// endPos: null (not searched), { progress } while searching, { moves, lens, scores, start } when found (see endgame-worker.js).
+let endPos = null;
+let endWorker = null;
+function findEndPositions() {
+  if (!book || endPos) return;
+  const b = book;
+  endPos = { progress: 0 };
+  if (endWorker) endWorker.terminate();
+  const w = new Worker(new URL('./endgame-worker.js', import.meta.url), { type: 'module' });
+  endWorker = w;
+  const done = () => { w.terminate(); if (endWorker === w) endWorker = null; };
+  w.onmessage = (e) => {
+    if (book !== b) { done(); return; }
+    const d = e.data;
+    if (d.scores) {
+      done();
+      if (!endPos.scores) useEndPositions(d);
+      if (bookRemembered) { b.endSaved = true; dbPut('endpos', { id: b.id, moves: d.moves, lens: d.lens, scores: d.scores }); } // found once per book
+    } else if (d.error) {
+      endPos = { error: d.error };
+      done();
+      if (mode === 'endgame') setFeedback('Could not read start positions from the book: ' + d.error, 'bad');
+    } else {
+      endPos.progress = d.progress;
+      if (mode === 'endgame' && T.phase === 'waiting') showEndProgress();
+    }
+  };
+  w.onerror = (e) => { endPos = { error: e.message || 'worker error' }; done(); };
+  w.postMessage(b.dv.buffer.slice(0));
+}
+function useEndPositions(d) {
+  const start = new Uint32Array(d.lens.length);
+  for (let i = 1; i < d.lens.length; i++) start[i] = start[i - 1] + d.lens[i - 1];
+  endPos = { moves: d.moves, lens: d.lens, scores: d.scores, start };
+  if (mode === 'endgame') {
+    renderTrainStats();
+    if (T.phase === 'waiting') startLine();
+  }
+}
+// Start positions saved on this device for book `b`, else searched when Train Endgame opens.
+async function loadEndPositions(b) {
+  const saved = await dbGet('endpos');
+  if (book !== b) return;
+  if (saved && saved.id === b.id && saved.scores) {
+    if (endWorker) { endWorker.terminate(); endWorker = null; }
+    b.endSaved = true;
+    if (!endPos || !endPos.scores) useEndPositions(saved);
+    return;
+  }
+  if (saved) dbDelete('endpos'); // for another book
+  if (mode === 'endgame') findEndPositions();
+}
+// Transcript of start position i.
+function endLineText(i) {
+  let s = '';
+  for (let k = endPos.start[i], e = k + endPos.lens[i]; k < e; k++) s += sqName(endPos.moves[k]);
+  return s;
+}
+function showEndProgress() {
+  setFeedback(`Finding start positions in the book… ${Math.floor((endPos.progress || 0) * 100)}%`);
+}
+// Indices of start positions whose score (for the side to move, i.e. you) is ticked.
+function endPool() {
+  const want = new Set(T.endScores), out = [];
+  for (let i = 0; i < endPos.scores.length; i++) if (want.has(endPos.scores[i])) out.push(i);
+  return out;
+}
+
+// Exact scores of every move in `st` (Edax, all moves, solved to the end). The promise is
+// shared so the position is only solved once. Resolves to { moves: [{ sq, score }] (best
+// first), res } or { stale } / { error }.
+const solveCache = new Map();
+function solve(st) {
+  const board = toEdaxBoard(st.board, st.toMove);
+  let p = solveCache.get(board);
+  if (!p) {
+    ensureEngine();
+    p = engine.analyze(board, 60, 60).then((res) => {
+      if (res.stale || res.error || !res.moves) { solveCache.delete(board); return res.stale ? { stale: true } : { error: res.error || 'no result' }; }
+      const moves = res.moves.map((m) => ({ sq: moveSq(m.move), score: m.score })).sort((a, b) => b.score - a.score);
+      return { moves, res };
+    });
+    solveCache.set(board, p);
+  }
+  return p;
 }
 
 // Play a move during training (keeps the move list consistent).
@@ -693,7 +844,7 @@ const lineSoFar = () => states.slice(1, cursor + 1).map((s) => sqName(s.move)).j
 
 // After a mistake or at the end of a line the user may play on and step through the moves
 // ("exploring"). The trained position is kept in T.anchor so Retry / Play best can return to it.
-function exploring() { return mode === 'train' && (T.phase === 'wrong' || T.phase === 'end'); }
+function exploring() { return isTrain() && (T.phase === 'wrong' || T.phase === 'end'); }
 function atAnchor() { return !!T.anchor && cur() === T.anchor.states[T.anchor.cursor]; }
 function setAnchor(marks = null) { T.anchor = { states: states.slice(), cursor, marks }; }
 function restoreAnchor() {
@@ -728,12 +879,14 @@ function startLine() {
   T.anchor = null;
   T.last = null;
   clearMarks();
+  T.lineId++;
   if (!book) { setFeedback('Open your book first.', 'bad'); return; }
   T.line = { correct: 0, total: 0 };
   T.retrying = false;
   ensureEngine();
+  if (mode === 'endgame') { startEndgame(); return; }
 
-  const due = srs.due(prefColors());
+  const due = srsBook.due(prefColors());
   if (due.length) {
     const item = due[0];
     const { states: parsed, error } = parseTranscript(item.line);
@@ -754,6 +907,40 @@ function startLine() {
   render();
   if (cur().toMove === T.lineColor) userTurn(`New line: you play <b>${colorName(T.lineColor)}</b>.`);
   else trainerTurn();
+}
+
+// Train Endgame: a due review, otherwise a random start position with a ticked score.
+// You play the side to move in the start position.
+function startEndgame() {
+  // intro(you, moveNo) -> text
+  const play = (line, intro) => {
+    const { states: parsed, error } = parseTranscript(line);
+    if (error) return false;
+    states = parsed;
+    cursor = states.length - 1;
+    T.lineColor = cur().toMove;
+    render();
+    userTurn(intro(`<b>${colorName(T.lineColor)}</b>`, cursor + 1));
+    return true;
+  };
+  const due = srsEnd.due([BLACK, WHITE]);
+  if (due.length) {
+    T.review = due[0];
+    if (play(due[0].line, (you, n) => `Review (${due.length} due): you play ${you}, move ${n}.`)) return;
+  }
+  T.review = null;
+  if (!endPos) findEndPositions();
+  if (endPos.error) { setFeedback('Could not read start positions from the book: ' + endPos.error, 'bad'); showButtons('btn-train-start'); return; }
+  if (!endPos.scores) { T.phase = 'waiting'; showEndProgress(); showButtons(); return; }
+  const pool = endPool();
+  if (!pool.length) {
+    setFeedback(T.endScores.length ? 'No start positions in the book with the ticked scores. Tick more scores.' : 'Tick at least one start score.', 'bad');
+    showButtons('btn-train-start');
+    return;
+  }
+  const i = pickRandom(pool);
+  const score = endPos.scores[i];
+  play(endLineText(i), (you, n) => `New endgame from move ${n}: you play ${you}, book score <b>${fmtScore(score)}</b>.`);
 }
 
 // A book leaf (in the book, no book moves) is still quizzed on its stored best move; the line ends after it.
@@ -781,7 +968,14 @@ function endLine(reason) {
   const lastBook = last
     ? `<br>Last book score: <b>${fmtScore(last.score)}</b> for you (${colorName(T.lineColor)}), after ${last.ply}.${last.move}.`
     : '';
-  setFeedback(`${lastHtml()}${reason}${lastBook}<span class="sub">This line: ${l.correct}/${l.total} correct.</span>`, 'end');
+  let result = '';
+  if (cur().over) { // final score for the trained side
+    const { black, white } = countDiscs(cur().board);
+    const d = T.lineColor === BLACK ? black - white : white - black;
+    result = ` You (${colorName(T.lineColor)}) ${d > 0 ? 'win' : d < 0 ? 'lose' : 'draw'} ${Math.max(black, white)}–${Math.min(black, white)}`
+      + ` (<b>${fmtScore(d)}</b>).`;
+  }
+  setFeedback(`${lastHtml()}${reason}${result}${lastBook}<span class="sub">This line: ${l.correct}/${l.total} correct.</span>`, 'end');
   showButtons('btn-train-next', 'btn-train-copy');
   renderTrainStats();
   setAnchor();
@@ -793,8 +987,11 @@ function userTurn(intro = '') {
   const st = cur();
   if (st.over) { endLine('Game over.'); return; }
   if (st.toMove !== T.lineColor) { trainerTurn(); return; }
-  const info = probe(st);
-  if (!info || !info.moves.some((m) => m.sq < 64)) { endLine(OUT_OF_BOOK); return; }
+  if (mode === 'endgame') solve(st); // start solving while you think
+  else {
+    const info = probe(st);
+    if (!info || !info.moves.some((m) => m.sq < 64)) { endLine(OUT_OF_BOOK); return; }
+  }
   const legal = legalMoves(st.board, st.toMove);
   if (legal.length === 1) { // forced move: nothing to train
     T.phase = 'trainer';
@@ -810,15 +1007,38 @@ function trainerTurn() {
   const st = cur();
   if (st.over) { endLine('Game over.'); return; }
   if (st.toMove === T.lineColor) { userTurn(); return; }
+  if (mode === 'endgame') { endTrainerTurn(st); return; }
   const info = probe(st);
   if (!info) { endLine(OUT_OF_BOOK); return; }
-  const cands = opponentCandidates(info, T.margin);
+  const cands = opponentCandidates(info, T.margin, T.floor);
   if (!cands.length) { endLine(OUT_OF_BOOK); return; }
   T.phase = 'trainer';
   T.timer = setTimeout(() => {
     pushMove(pickRandom(cands).sq);
     T.timer = setTimeout(() => (cur().toMove === T.lineColor ? userTurn() : trainerTurn()), 450);
   }, 350);
+}
+
+// Train Endgame: the trainer plays a move within T.endMargin discs of the exact best.
+async function endTrainerTurn(st) {
+  const id = T.lineId;
+  T.phase = 'trainer';
+  const t0 = performance.now();
+  let r;
+  for (let tries = 0; tries < 3; tries++) { // a superseded solve comes back stale: ask again
+    const slow = setTimeout(() => { if (T.lineId === id && cur() === st) setFeedback(lastHtml() + 'Trainer is thinking…'); }, 600);
+    r = await solve(st);
+    clearTimeout(slow);
+    if (T.lineId !== id || cur() !== st || mode !== 'endgame') return;
+    if (!r.stale) break;
+  }
+  if (!r.moves || !r.moves.length) { setFeedback('Engine error: ' + (r.error || 'no result'), 'bad'); showButtons('btn-train-next'); return; }
+  const pick = pickRandom(withinMargin(r.moves, T.endMargin));
+  T.timer = setTimeout(() => {
+    if (T.lineId !== id) return;
+    pushMove(pick.sq);
+    T.timer = setTimeout(() => (cur().toMove === T.lineColor ? userTurn() : trainerTurn()), 450);
+  }, Math.max(0, 350 - (performance.now() - t0)));
 }
 
 // Score of `sq` for the side to move in `st`: book first, Edax if the move is not in the book.
@@ -867,6 +1087,7 @@ async function trainClick(sq) {
   if (T.phase !== 'user') return;
   const st = cur();
   if (!playMove(st, sq)) return;
+  if (mode === 'endgame') { endClick(st, sq); return; }
   const info = probe(st);
   T.phase = 'checking';
   setFeedback('Checking…');
@@ -881,9 +1102,9 @@ async function trainClick(sq) {
   const correct = !offBook && r.score >= best;
   const warn = correct ? umigameWarning(st, info, sq, best) : '';
   const key = book.recordKey(info.index);
-  const undo = T.retrying ? null : { key, prev: srs.get(key) }; // lets Accept revert this record
+  const undo = T.retrying ? null : { key, prev: srsBook.get(key) }; // lets Accept revert this record
   if (!T.retrying) {
-    srs.record(key, lineSoFar(), T.lineColor, correct);
+    srsBook.record(key, lineSoFar(), T.lineColor, correct);
     T.line.total++; T.session.total++;
     if (correct) { T.line.correct++; T.session.correct++; }
     recordMoveStat(cursor + 1, correct, !!warn);
@@ -926,12 +1147,90 @@ async function trainClick(sq) {
   showButtons('btn-train-retry', 'btn-train-accept', 'btn-train-best', 'btn-train-next', 'btn-train-copy');
 }
 
+// Train Endgame: a move is correct only if it keeps the exact best result.
+async function endClick(st, sq) {
+  const id = T.lineId;
+  T.phase = 'checking';
+  const slow = setTimeout(() => { if (T.lineId === id && T.phase === 'checking') setFeedback('Solving…'); }, 150);
+  let r;
+  for (let tries = 0; tries < 3; tries++) {
+    r = await solve(st);
+    if (T.lineId !== id || mode !== 'endgame' || cur() !== st) { clearTimeout(slow); return; }
+    if (!r.stale) break;
+  }
+  clearTimeout(slow);
+  const mine = r.moves && r.moves.find((m) => m.sq === sq);
+  if (!mine) { T.phase = 'user'; setFeedback('Could not score that move. Try again.', 'bad'); return; }
+  const best = r.moves[0].score;
+  const correct = mine.score === best;
+  const ply = cursor + 1;
+  const key = toEdaxBoard(st.board, st.toMove);
+  const undo = T.retrying ? null : { key, prev: srsEnd.get(key) };
+  if (!T.retrying) {
+    srsEnd.record(key, lineSoFar(), T.lineColor, correct);
+    T.line.total++; T.endSession.total++;
+    if (correct) { T.line.correct++; T.endSession.correct++; }
+    recordMoveStat(ply, correct);
+  }
+  renderTrainStats();
+  const bestMoves = r.moves.filter((m) => m.score === best);
+
+  if (correct) {
+    T.retrying = false;
+    const others = bestMoves.filter((m) => m.sq !== sq).map((m) => sqName(m.sq));
+    T.lastWarn = false;
+    T.last = `<b>${ply}.${sqName(sq)} ${fmtScore(mine.score)}</b>: correct.` + (others.length ? ` Also best: ${others.join(', ')}` : '');
+    setFeedback(`<b>${sqName(sq)} ${fmtScore(mine.score)}</b>: correct.`
+      + (others.length ? `<span class="sub">Also best: ${others.join(', ')}</span>` : ''), 'good');
+    pushMove(sq);
+    T.phase = 'trainer';
+    T.timer = setTimeout(trainerTurn, 650);
+    return;
+  }
+
+  T.phase = 'wrong';
+  T.last = null;
+  const list = r.moves.slice();
+  paintScores(list, false);
+  cells[sq].classList.add('wrong');
+  for (const m of bestMoves) cells[m.sq].classList.add('right');
+  setAnchor({ list, wrong: sq, right: bestMoves.map((m) => m.sq) });
+  T.anchor.undo = undo;
+  renderExplore();
+  const loss = best - mine.score;
+  setFeedback(`<b>${sqName(sq)} ${fmtScore(mine.score)}</b> loses ${loss} disc${loss === 1 ? '' : 's'}.`
+    + ` Best: <b>${bestMoves.map((m) => sqName(m.sq) + ' ' + fmtScore(m.score)).join(', ')}</b>`
+    + '<span class="sub">Score source: Edax exact solve. This position is saved for review.</span>', 'bad');
+  showButtons('btn-train-retry', 'btn-train-accept', 'btn-train-best', 'btn-train-next', 'btn-train-copy');
+}
+
 $('tab-analyse').onclick = () => setMode('analyse');
+$('tab-endgame').onclick = () => setMode('endgame');
 $('tab-train').onclick = () => setMode('train');
 $('opt-train-color').value = String(T.colorPref);
 $('opt-train-margin').value = String(T.margin);
 $('opt-train-color').onchange = (e) => { T.colorPref = Number(e.target.value); store.set('trainColor', T.colorPref); renderTrainStats(); };
 $('opt-train-margin').onchange = (e) => { T.margin = Number(e.target.value); store.set('trainMargin', T.margin); };
+$('opt-train-floor').value = T.floor === null ? 'all' : String(T.floor);
+$('opt-train-floor').onchange = (e) => {
+  T.floor = e.target.value === 'all' ? null : Number(e.target.value);
+  store.set('trainFloor', T.floor);
+};
+$('opt-end-margin').value = String(T.endMargin);
+$('opt-end-margin').onchange = (e) => { T.endMargin = Number(e.target.value); store.set('endMargin', T.endMargin); };
+for (const v of END_SCORES) {
+  const l = document.createElement('label');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = T.endScores.includes(v);
+  box.onchange = () => {
+    T.endScores = END_SCORES.filter((x) => (x === v ? box.checked : T.endScores.includes(x)));
+    store.set('endScores', T.endScores);
+    renderTrainStats();
+  };
+  l.append(box, fmtScore(v));
+  $('end-scores').appendChild(l);
+}
 $('opt-train-cap').value = String(T.cap);
 $('opt-train-cap').onchange = (e) => { T.cap = Number(e.target.value); store.set('trainCap', T.cap); };
 $('btn-train-start').onclick = startLine;
@@ -962,9 +1261,9 @@ $('btn-train-accept').onclick = () => {
   clearMarks();
   if (undo) {
     // Undo the miss, then record it as a correct answer (moves a due review up a box).
-    srs.put(undo.key, undo.prev);
-    srs.record(undo.key, lineSoFar(), T.lineColor, true);
-    T.line.correct++; T.session.correct++;
+    srsNow().put(undo.key, undo.prev);
+    srsNow().record(undo.key, lineSoFar(), T.lineColor, true);
+    T.line.correct++; (mode === 'endgame' ? T.endSession : T.session).correct++;
     acceptMoveStat(cursor + 1);
   }
   renderTrainStats();
@@ -980,11 +1279,17 @@ $('btn-train-accept').onclick = () => {
 $('btn-train-best').onclick = () => {
   if (T.phase !== 'wrong') return;
   restoreAnchor();
-  const info = probe(cur());
   clearMarks();
-  if (!info) return;
-  const best = bestScore(info);
-  const pick = info.moves.find((m) => m.sq < 64 && m.inBook && m.score === best) || info.moves.find((m) => m.sq < 64 && m.score === best);
+  let pick;
+  if (mode === 'endgame') { // exact scores kept with the mistake
+    if (!T.anchor || !T.anchor.marks) return;
+    pick = T.anchor.marks.list[0];
+  } else {
+    const info = probe(cur());
+    if (!info) return;
+    const best = bestScore(info);
+    pick = info.moves.find((m) => m.sq < 64 && m.inBook && m.score === best) || info.moves.find((m) => m.sq < 64 && m.score === best);
+  }
   T.retrying = false;
   T.phase = 'trainer';
   T.last = `<b>${cursor + 1}.${sqName(pick.sq)} ${fmtScore(pick.score)}</b>: best move played.`;
@@ -996,7 +1301,7 @@ $('btn-train-best').onclick = () => {
 
 // ---------- Actions ----------
 function onCell(s) {
-  if (mode === 'train' && !exploring()) { trainClick(s); return; }
+  if (isTrain() && !exploring()) { trainClick(s); return; }
   const next = states[cursor + 1];
   if (next && next.move === s) { cursor++; render(true); return; }
   const st = playMove(cur(), s);
@@ -1008,7 +1313,7 @@ function onCell(s) {
 }
 
 function goTo(i) {
-  if (mode === 'train' && !exploring()) return;
+  if (isTrain() && !exploring()) return;
   i = Math.max(0, Math.min(states.length - 1, i));
   if (i === cursor) return;
   const step = i === cursor + 1;

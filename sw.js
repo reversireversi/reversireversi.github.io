@@ -3,7 +3,7 @@
 // every file kept in a cache for offline use. The book itself is not handled here; it is
 // kept by the page in IndexedDB and never fetched over the network.
 
-const CACHE = 'reversi-trainer-v1';
+const CACHE = 'reversi-trainer-v2';
 const NETWORK_TIMEOUT_MS = 4000; // on a poor connection, fall back to the saved copy
 
 const APP_FILES = [
@@ -18,6 +18,7 @@ const APP_FILES = [
   'js/train.js',
   'js/device-store.js',
   'js/umigame-worker.js',
+  'js/endgame-worker.js',
   'engine/edax-worker.js',
   'engine/build/edax.js',
   'engine/build/edax.wasm',

@@ -361,7 +361,13 @@ select {
 .eline .pv { color: var(--muted); font-family: Consolas, "Cascadia Mono", monospace; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- Modes ---------- */
-.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: #16181b; border-radius: 10px; padding: 4px; margin-bottom: 16px; }
+body.endgame .tr-book { display: none !important; }
+body:not(.endgame) .tr-end { display: none !important; }
+.mc-legend .tr-book { display: inline-flex; align-items: center; gap: 5px; }
+.end-scores { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.end-scores label { gap: 3px !important; color: var(--text); font-variant-numeric: tabular-nums; }
+.end-scores input { margin: 0; accent-color: var(--accent); }
+.tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; background: #16181b; border-radius: 10px; padding: 4px; margin-bottom: 16px; }
 .tab { border: none; background: transparent; color: var(--muted); font-weight: 600; padding: 7px; }
 .tab.active { background: #2f343a; color: var(--text); }
 .tab:hover:not(.active) { background: rgba(255,255,255,.05); }

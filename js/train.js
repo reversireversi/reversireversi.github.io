@@ -54,12 +54,18 @@ export class Repetition {
   clear() { this.items = {}; this.save(); }
 }
 
-// Book moves (not the leaf) within `margin` discs of the best book move.
-export function opponentCandidates(info, margin) {
-  const links = info.moves.filter((m) => m.inBook && m.sq < 64);
-  if (!links.length) return [];
-  const best = Math.max(...links.map((m) => m.score));
-  return links.filter((m) => m.score >= best - margin);
+// Moves within `margin` discs of the best move and, if `floor` is set, scoring at least `floor`
+// (for the side to move). If no move passes both, the best moves. moves: [{ sq, score }].
+export function withinMargin(moves, margin, floor = null) {
+  if (!moves.length) return [];
+  const best = Math.max(...moves.map((m) => m.score));
+  const ok = moves.filter((m) => m.score >= best - margin && (floor === null || m.score >= floor));
+  return ok.length ? ok : moves.filter((m) => m.score === best);
+}
+
+// Book moves (not the leaf) for the trainer to choose from: see withinMargin.
+export function opponentCandidates(info, margin, floor = null) {
+  return withinMargin(info.moves.filter((m) => m.inBook && m.sq < 64), margin, floor);
 }
 
 export const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];

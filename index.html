@@ -31,7 +31,7 @@
       <div class="move-chart train-only" id="move-chart">
         <div class="mc-head">
           <span class="mc-title">Answers by move</span>
-          <span class="mc-legend"><i class="ok"></i>correct <i class="wa"></i>with Umigame warning <i class="no"></i>wrong</span>
+          <span class="mc-legend"><i class="ok"></i>correct <span class="tr-book"><i class="wa"></i>with Umigame warning</span> <i class="no"></i>wrong</span>
           <span class="mc-tabs">
             <button id="mc-session" class="small active">Session</button>
             <button id="mc-all" class="small">All-time</button>
@@ -49,6 +49,7 @@
       <div class="tabs" role="tablist">
         <button id="tab-analyse" class="tab active" role="tab">Analyse</button>
         <button id="tab-train" class="tab" role="tab">Train</button>
+        <button id="tab-endgame" class="tab" role="tab">Train Endgame</button>
       </div>
 
       <div class="score">
@@ -64,20 +65,35 @@
       <!-- Training -->
       <div class="train-only train">
         <div class="train-setup">
-          <label>You play
+          <label class="tr-book">You play
             <select id="opt-train-color">
               <option value="1">Black</option>
               <option value="2">White</option>
               <option value="3">Both</option>
             </select>
           </label>
-          <label title="The trainer picks book moves within this many discs of the best book move">Opponent within
+          <label class="tr-book" title="The trainer picks book moves within this many discs of the best book move">Opponent within
             <select id="opt-train-margin">
               <option value="0">0</option><option value="1">1</option><option value="2">2</option>
               <option value="3">3</option><option value="4">4</option><option value="6">6</option>
             </select> discs
           </label>
-          <label title="Longest time Edax may take to check a move that is not in the book, and to score positions while you play on. When it runs out, the deepest level finished is used.">Time cap
+          <label class="tr-book" title="The trainer never plays a book move scoring below this for itself (if no allowed move is good enough, it plays the best one)">Never worse than
+            <select id="opt-train-floor">
+              <option value="all">All</option><option value="0">0</option><option value="-2">-2</option>
+              <option value="-4">-4</option><option value="-6">-6</option><option value="-8">-8</option>
+              <option value="-10">-10</option><option value="-12">-12</option><option value="-14">-14</option>
+              <option value="-16">-16</option>
+            </select>
+          </label>
+          <label class="tr-end" title="The trainer plays a move within this many discs of the best (exact solve); 0 = perfect play">Opponent within
+            <select id="opt-end-margin">
+              <option value="0">0 (perfect)</option><option value="1">1</option><option value="2">2</option>
+              <option value="3">3</option><option value="4">4</option>
+            </select> discs
+          </label>
+          <div class="tr-end end-scores" id="end-scores" title="Start positions (after 39 or 40 moves, from the book) where your score is one of the ticked values"><span>Start score</span></div>
+          <label class="tr-book" title="Longest time Edax may take to check a move that is not in the book, and to score positions while you play on. When it runs out, the deepest level finished is used.">Time cap
             <select id="opt-train-cap">
               <option value="1">1 s</option><option value="2">2 s</option><option value="3">3 s</option>
               <option value="5">5 s</option><option value="10">10 s</option><option value="30">30 s</option>
