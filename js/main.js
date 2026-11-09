@@ -728,13 +728,13 @@ function setMode(m) {
   render();
 }
 
-// On phones the ⏮ ◀ ▶ ⏭ row sits above the session stats while training (it is used when
+// On phones the ⏮ ◀ ▶ ⏭ row sits right under the training buttons (it is used when
 // playing on), and in its usual place in Analyse.
 const navEl = document.querySelector('.nav');
 const navHome = navEl.nextElementSibling;
 const phone = matchMedia('(max-width: 600px)');
 function placeNav() {
-  if (isTrain() && phone.matches) $('train-stats').before(navEl);
+  if (isTrain() && phone.matches) $('train-explore').before(navEl);
   else navHome.before(navEl);
 }
 phone.addEventListener('change', placeNav);
