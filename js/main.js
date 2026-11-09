@@ -1118,9 +1118,10 @@ async function trainClick(sq) {
   if (!r) { T.phase = 'user'; setFeedback('Could not score that move. Try again.', 'bad'); return; }
 
   const best = bestScore(info);
-  // A move outside the book is never correct where the book has moves of its own
-  // (the stored best non-book move is in info.moves, so it can still be correct).
-  const offBook = !info.moves.some((m) => m.sq === sq) && info.nLink > 0;
+  // A move the book does not list is never correct: only book moves and the stored best
+  // non-book move (* move) are in info.moves. In a position with no book moves, that means
+  // only the * move is correct (Edax scores at a lower level are not comparable to it).
+  const offBook = !info.moves.some((m) => m.sq === sq);
   const correct = !offBook && r.score >= best;
   const warn = correct ? umigameWarning(st, info, sq, best) : '';
   const key = book.recordKey(info.index);
