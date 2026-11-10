@@ -126,7 +126,11 @@ body {
   position: absolute;
   inset: 8%;
   transform-style: preserve-3d;
+  /* Off-centre placement (setting): --jx/--jy in -1..1 per disc, --jit = most % of the disc size */
+  translate: calc(var(--jx, 0) * var(--jit, 0) * 1%) calc(var(--jy, 0) * var(--jit, 0) * 1%);
 }
+.board.jit-slight { --jit: 6; }
+.board.jit-strong { --jit: 9; }
 .holder.drop { animation: drop .22s ease-out; }
 @keyframes drop {
   from { transform: scale(1.18) translateY(-6%); opacity: .2; }
@@ -224,8 +228,8 @@ button:hover:not(:disabled) { background: #343940; border-color: #4a5058; }
 button:disabled { opacity: .4; cursor: default; }
 
 .nav { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
-.options { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; }
-.toggle { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.options { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; }
+.toggle { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
 .toggle input { accent-color: var(--accent); }
 
 .section-title {

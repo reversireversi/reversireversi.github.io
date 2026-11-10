@@ -53,6 +53,7 @@ for (const [x, y] of [[2, 2], [6, 2], [2, 6], [6, 6]]) {
 function makeDisc(color, drop) {
   const holder = document.createElement('div');
   holder.className = 'holder' + (drop ? ' drop' : '');
+  setSpot(holder);
   const disc = document.createElement('div');
   disc.className = 'disc' + (color === WHITE ? ' is-white' : '');
   disc.innerHTML = '<div class="face black"></div><div class="face white"></div>';
@@ -60,11 +61,24 @@ function makeDisc(color, drop) {
   return holder;
 }
 
+// Random off-centre spot of a disc (used when Disc placement is not Centred): --jx/--jy in the
+// unit circle, uniformly at random. Set when a disc is placed, flipped, or a new game starts.
+function setSpot(holder) {
+  const a = Math.random() * 2 * Math.PI, r = Math.sqrt(Math.random());
+  holder.style.setProperty('--jx', (r * Math.cos(a)).toFixed(3));
+  holder.style.setProperty('--jy', (r * Math.sin(a)).toFixed(3));
+}
+
 // ---------- Rendering ----------
+let spotGame = null; // first state of the game the disc spots belong to
 function renderBoard(animate) {
   const st = cur();
   const b = st.board;
   const mr = st.move >> 3, mc = st.move & 7;
+  if (states[0] !== spotGame) { // a new game or line: new spots for the discs that stay on the board
+    spotGame = states[0];
+    for (const h of discEls) if (h) { h.style.transition = 'none'; setSpot(h); }
+  }
 
   for (let s = 0; s < 64; s++) {
     const v = b[s];
@@ -79,6 +93,9 @@ function renderBoard(animate) {
       const dist = animate && st.move >= 0 ? Math.max(Math.abs((s >> 3) - mr), Math.abs((s & 7) - mc)) : 0;
       disc.style.transitionDelay = animate ? `${60 + dist * 55}ms` : '0ms';
       disc.classList.toggle('is-white', v === WHITE);
+      // A flipped disc lands on a new random spot, sliding there while it turns.
+      discEls[s].style.transition = animate ? `translate .42s ease ${60 + dist * 55}ms` : 'none';
+      setSpot(discEls[s]);
     }
     shown[s] = v;
     cells[s].classList.remove('legal', 'w', 'last');
@@ -1371,6 +1388,15 @@ $('btn-last').onclick = () => goTo(states.length - 1);
 $('btn-new').onclick = () => { states = [initialState()]; cursor = 0; render(); };
 
 $('opt-hints').onchange = (e) => boardEl.classList.toggle('hints-off', !e.target.checked);
+
+// Disc placement: centred, or a little off-centre in each square like a real board.
+function setJitter(v) {
+  boardEl.classList.toggle('jit-slight', v === 'slight');
+  boardEl.classList.toggle('jit-strong', v === 'strong');
+}
+$('opt-jitter').value = store.get('discJitter', 'off');
+setJitter($('opt-jitter').value);
+$('opt-jitter').onchange = (e) => { store.set('discJitter', e.target.value); setJitter(e.target.value); };
 
 $('btn-load').onclick = () => {
   const { states: parsed, error } = parseTranscript($('transcript').value);
