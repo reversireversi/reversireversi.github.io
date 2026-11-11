@@ -1550,3 +1550,4 @@ document.addEventListener('keydown', (e) => {
 });
 
 render();
+setMode('train'); // the app opens on Train
