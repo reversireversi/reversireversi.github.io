@@ -6,8 +6,10 @@
 const KILL_AFTER_MS = 250;
 
 export class Engine {
-  constructor(onStatus = () => {}) {
+  // url: the worker script, e.g. 'engine/edax-worker.js?hash=18' for less search memory.
+  constructor(onStatus = () => {}, url = 'engine/edax-worker.js') {
     this.onStatus = onStatus;
+    this.url = url;
     this.seq = 0;
     this.spawn();
   }
@@ -15,7 +17,7 @@ export class Engine {
   spawn() {
     this.ready = false;
     this.current = null;
-    this.worker = new Worker('engine/edax-worker.js');
+    this.worker = new Worker(this.url);
     this.worker.onmessage = (e) => this.onMessage(e.data);
     this.worker.onerror = (e) => this.onStatus('error', e.message || 'worker error');
     this.onStatus('loading');

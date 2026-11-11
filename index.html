@@ -106,7 +106,12 @@
               <option value="3">3</option><option value="4">4</option>
             </select> discs
           </label>
-          <div class="tr-end end-scores" id="end-scores" title="Start positions (after 39 or 40 moves, from the book) where your score is one of the ticked values"><span>Start score</span></div>
+          <div class="tr-end end-scores" id="end-scores" title="Games start where your exact score is one of the ticked values; each ticked score is about equally likely"><span>Start score</span></div>
+          <label class="tr-end" title="Games start after a random move in this range. Book lines reach move 39 or 40; for later starts Edax plays the best moves for both sides up to there.">Start after move
+            <select id="opt-end-from"></select> to <select id="opt-end-to"></select>
+          </label>
+          <label class="tr-end" title="On: each ticked start score comes up about equally often. Off: scores come up as often as the book has positions with them (mostly 0)."><input type="checkbox" id="opt-end-equal"> Equal chance per score</label>
+          <label class="tr-end" title="Only new positions: due Endgame reviews are not shown (your mistakes are still saved for review)"><input type="checkbox" id="opt-end-noreviews"> No reviews</label>
           <label class="tr-book" title="Longest time Edax may take to check a move that is not in the book, and to score positions while you play on. When it runs out, the deepest level finished is used.">Time cap
             <select id="opt-train-cap">
               <option value="1">1 s</option><option value="2">2 s</option><option value="3">3 s</option>

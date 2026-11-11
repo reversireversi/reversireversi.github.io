@@ -464,6 +464,7 @@ async function openBook(buffer, name, fromDevice = false) {
   paintBoard();
   if (isTrain() && T.phase === 'idle') { setFeedback('Book loaded. Press <b>Start</b>.'); renderTrainStats(); }
   endPos = null;
+  endNext = null; prepToken++;
   loadEndPositions(b);
 
   const saved = await dbGet('umi');
@@ -606,6 +607,10 @@ const T = {
   floor: store.get('trainFloor', null),   // trainer never plays a book move below this (null = no limit)
   endMargin: store.get('endMargin', 2),   // Train Endgame: trainer within this many discs of perfect
   endScores: store.get('endScores', END_SCORES.slice()), // ticked start scores
+  endFrom: store.get('endFrom', 39),      // games start after a move in endFrom..endTo
+  endTo: store.get('endTo', 40),
+  endNoReviews: store.get('endNoReviews', false), // Endgame: only new positions
+  endEqual: store.get('endEqual', true),  // Endgame: each ticked score equally likely (else by book counts)
   lineId: 0,
   reviewsOnly: store.get('reviewsOnly', false),
   reviewPly: 0,           // move number of the reviewed position (cursor there)
@@ -637,7 +642,7 @@ function renderTrainStats() {
   const c = srsNow().count(end ? [BLACK, WHITE] : prefColors());
   const s = end ? T.endSession : T.session;
   let text = `Session: ${s.correct}/${s.total} correct · Reviews due: ${c.due} · Saved positions: ${c.total}`;
-  if (end && endPos && endPos.scores) text += ` · Start positions with the ticked scores: ${endPool().length.toLocaleString()}`;
+  if (end && endPos && endPos.byKey) text += ` · Book positions to start from: ${endCount().toLocaleString()}`;
   $('train-stats').textContent = text;
   renderMoveChart();
   if (!end) { renderWorst(); renderBoxes(); }
@@ -794,7 +799,7 @@ const BUTTONS = ['btn-train-start', 'btn-train-retry', 'btn-train-accept', 'btn-
 function saveTab() {
   const s = { states, cursor };
   if (isTrain()) {
-    if (T.phase === 'idle' || T.phase === 'waiting') { tabState[mode] = s; return; }
+    if (T.phase === 'idle' || T.phase === 'waiting' || T.phase === 'preparing') { tabState[mode] = s; return; }
     const fb = $('train-feedback');
     Object.assign(s, {
       phase: T.phase, fb: fb.innerHTML, fbClass: fb.className, buttons: BUTTONS.filter((id) => !$(id).hidden),
@@ -840,6 +845,7 @@ function setMode(m) {
   T.last = null;
   clearMarks();
   placeNav();
+  if (m === 'endgame') prepNext(); // get the next start position ready
   if (isTrain() && restoreTrainTab()) { renderTrainStats(); return; }
   if (m === 'train') {
     if (engine) engine.cancel();
@@ -903,8 +909,17 @@ function findEndPositions() {
 function useEndPositions(d) {
   const start = new Uint32Array(d.lens.length);
   for (let i = 1; i < d.lens.length; i++) start[i] = start[i - 1] + d.lens[i - 1];
-  endPos = { moves: d.moves, lens: d.lens, scores: d.scores, start };
+  // byKey: "ply|score" -> indices of the start positions after `ply` moves with that book score
+  const byKey = new Map();
+  for (let i = 0; i < d.lens.length; i++) {
+    const k = `${d.lens[i]}|${d.scores[i]}`;
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(i);
+  }
+  endPos = { moves: d.moves, lens: d.lens, scores: d.scores, start, byKey };
+  endNext = null;
   if (mode === 'endgame') {
+    prepNext();
     renderTrainStats();
     if (T.phase === 'waiting') startLine();
   }
@@ -931,17 +946,95 @@ function endLineText(i) {
 function showEndProgress() {
   setFeedback(`Finding start positions in the book… ${Math.floor((endPos.progress || 0) * 100)}%`);
 }
-// Indices of start positions whose score (for the side to move, i.e. you) is ticked.
-function endPool() {
-  const want = new Set(T.endScores), out = [];
-  for (let i = 0; i < endPos.scores.length; i++) if (want.has(endPos.scores[i])) out.push(i);
+// ---------- Train Endgame: choosing and preparing start positions ----------
+// A game starts after move n (T.endFrom..T.endTo). Book lines reach move 39 or 40; for a later
+// start Edax plays the best move for both sides from a move-40 book position up to move n, which
+// keeps the exact score. You play the side to move at the start, so when the number of moves
+// played is odd, the book position needs the opposite score. Each ticked score is about equally
+// likely: first a move n and a score are picked, then a position.
+const endBase = (n) => (n <= 40 ? n : 40);
+function endPoolFor(n, s) {
+  const steps = n - endBase(n);
+  return endPos.byKey.get(`${endBase(n)}|${steps % 2 ? -s : s}`) || [];
+}
+// [{ n, scores: [ticked scores with positions] }] for the start moves in range that have any.
+function endChoices() {
+  const out = [];
+  for (let n = T.endFrom; n <= T.endTo; n++) {
+    const scores = T.endScores.filter((s) => endPoolFor(n, s).length);
+    if (scores.length) out.push({ n, scores });
+  }
   return out;
+}
+// Number of book positions the current settings can start from (for the stats line).
+function endCount() {
+  const keys = new Set();
+  for (const { n, scores } of endChoices()) for (const s of scores) keys.add(`${endBase(n)}|${(n - endBase(n)) % 2 ? -s : s}`);
+  let k = 0;
+  for (const key of keys) k += endPos.byKey.get(key).length;
+  return k;
+}
+const endSig = () => `${T.endFrom}-${T.endTo}|${T.endScores.join(',')}|${T.endEqual}`;
+// Score for start move n: each ticked score equally likely, or (endEqual off) in proportion to
+// how many book positions have it.
+function pickScore(n, scores) {
+  if (T.endEqual) return pickRandom(scores);
+  const sizes = scores.map((s) => endPoolFor(n, s).length);
+  let r = Math.random() * sizes.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < scores.length; i++) { r -= sizes[i]; if (r < 0) return scores[i]; }
+  return scores[scores.length - 1];
+}
+
+// The next start position is prepared in a second Edax (less search memory) while you play,
+// so Start / Next line can begin at once. endNext: { sig, promise } for the settings in `sig`.
+let prepEngine = null;
+let prepToken = 0;
+let endNext = null;
+function prepNext() {
+  if (!endPos || !endPos.byKey || T.reviewsOnly) return null;
+  const sig = endSig();
+  if (!endNext || endNext.sig !== sig) endNext = { sig, promise: prepareStart(++prepToken) };
+  return endNext.promise;
+}
+// Resolves to { line, n, score, board, solved } (solved: exact scores of every move there),
+// { none } if the settings allow no position, or { error }.
+async function prepareStart(token) {
+  if (!prepEngine) prepEngine = new Engine(() => {}, 'engine/edax-worker.js?hash=18');
+  const e = prepEngine;
+  for (let tries = 0; tries < 6; tries++) {
+    const choices = endChoices();
+    if (!choices.length) return { none: true };
+    const { n, scores } = pickRandom(choices);
+    const s = pickScore(n, scores);
+    let line = endLineText(pickRandom(endPoolFor(n, s)));
+    let st = parseTranscript(line).states.at(-1);
+    let ok = true;
+    for (let k = endBase(n); k < n; k++) { // best move for both sides up to move n
+      const r = await e.analyze(toEdaxBoard(st.board, st.toMove), 60, 1);
+      if (token !== prepToken) return { stale: true };
+      if (r.stale || r.error || !r.moves || !r.moves.length) return { error: r.error || 'no result' };
+      st = playMove(st, moveSq(r.moves[0].move));
+      line += r.moves[0].move;
+      if (!st || st.over) { ok = false; break; }
+    }
+    if (!ok) continue;
+    const board = toEdaxBoard(st.board, st.toMove);
+    const res = await e.analyze(board, 60, 60);
+    if (token !== prepToken) return { stale: true };
+    if (res.stale || res.error || !res.moves || !res.moves.length) return { error: res.error || 'no result' };
+    const solved = solvedFrom(res);
+    // A pass on the way, or a book score that is not exact, can change the score: pick again.
+    if (solved.moves[0].score !== s) continue;
+    return { line, n, score: s, board, solved };
+  }
+  return { none: true };
 }
 
 // Exact scores of every move in `st` (Edax, all moves, solved to the end). The promise is
 // shared so the position is only solved once. Resolves to { moves: [{ sq, score }] (best
 // first), res } or { stale } / { error }.
 const solveCache = new Map();
+const solvedFrom = (res) => ({ moves: res.moves.map((m) => ({ sq: moveSq(m.move), score: m.score })).sort((a, b) => b.score - a.score), res });
 function solve(st) {
   const board = toEdaxBoard(st.board, st.toMove);
   let p = solveCache.get(board);
@@ -949,8 +1042,7 @@ function solve(st) {
     ensureEngine();
     p = engine.analyze(board, 60, 60).then((res) => {
       if (res.stale || res.error || !res.moves) { solveCache.delete(board); return res.stale ? { stale: true } : { error: res.error || 'no result' }; }
-      const moves = res.moves.map((m) => ({ sq: moveSq(m.move), score: m.score })).sort((a, b) => b.score - a.score);
-      return { moves, res };
+      return solvedFrom(res);
     });
     solveCache.set(board, p);
   }
@@ -1057,7 +1149,7 @@ function noReviews() {
 
 // Train Endgame: a due review, otherwise a random start position with a ticked score.
 // You play the side to move in the start position.
-function startEndgame() {
+async function startEndgame() {
   // intro(you, moveNo) -> text
   const play = (line, intro) => {
     const { states: parsed, error } = parseTranscript(line);
@@ -1069,26 +1161,45 @@ function startEndgame() {
     userTurn(intro(`<b>${colorName(T.lineColor)}</b>`, cursor + 1));
     return true;
   };
-  const rev = nextReview(srsEnd, [BLACK, WHITE]);
+  const rev = T.endNoReviews && !T.reviewsOnly ? null : nextReview(srsEnd, [BLACK, WHITE]);
   if (rev) {
     T.review = rev.item;
     T.reviewPly = parseTranscript(rev.item.line).states.length - 1;
-    if (play(rev.item.line, (you, n) => `${rev.label}: you play ${you}, move ${n}.`)) return;
+    if (play(rev.item.line, (you, n) => `${rev.label}: you play ${you}, move ${n}.`)) { prepNext(); return; }
   }
   T.review = null;
   if (T.reviewsOnly) { noReviews(); return; }
   if (!endPos) findEndPositions();
   if (endPos.error) { setFeedback('Could not read start positions from the book: ' + endPos.error, 'bad'); showButtons('btn-train-start'); return; }
-  if (!endPos.scores) { T.phase = 'waiting'; showEndProgress(); showButtons(); return; }
-  const pool = endPool();
-  if (!pool.length) {
-    setFeedback(T.endScores.length ? 'No start positions in the book with the ticked scores. Tick more scores.' : 'Tick at least one start score.', 'bad');
+  if (!endPos.byKey) { T.phase = 'waiting'; showEndProgress(); showButtons(); return; }
+  if (!endChoices().length) {
+    setFeedback(T.endScores.length ? 'No start positions in the book with the ticked scores. Tick more scores or widen the start moves.' : 'Tick at least one start score.', 'bad');
     showButtons('btn-train-start');
     return;
   }
-  const i = pickRandom(pool);
-  const score = endPos.scores[i];
-  play(endLineText(i), (you, n) => `New endgame from move ${n}: you play ${you}, book score <b>${fmtScore(score)}</b>.`);
+  // Use the prepared start position (or wait for it).
+  const id = T.lineId, sig = endSig();
+  const p = prepNext();
+  endNext = null; // taken: the next one is prepared once this game starts
+  T.phase = 'preparing';
+  showButtons();
+  const slow = setTimeout(() => { if (T.lineId === id) setFeedback('Preparing the start position…'); }, 150);
+  const r = await p;
+  clearTimeout(slow);
+  if (T.lineId !== id || mode !== 'endgame') { // left meanwhile: keep it for next time
+    if (r && r.line) endNext = { sig, promise: Promise.resolve(r) };
+    return;
+  }
+  if (!r || !r.line) {
+    T.phase = 'idle';
+    setFeedback(r && r.error ? 'Engine error: ' + r.error
+      : 'Could not find a start position with the ticked scores in that move range. Tick more scores or widen the start moves.', 'bad');
+    showButtons('btn-train-start');
+    return;
+  }
+  solveCache.set(r.board, Promise.resolve(r.solved)); // already solved: your first move is checked at once
+  play(r.line, (you, n) => `New endgame from move ${n}: you play ${you}, score <b>${fmtScore(r.score)}</b>.`);
+  prepNext();
 }
 
 // A book leaf (in the book, no book moves) is still quizzed on its stored best move; the line ends after it.
@@ -1399,10 +1510,40 @@ for (const v of END_SCORES) {
     T.endScores = END_SCORES.filter((x) => (x === v ? box.checked : T.endScores.includes(x)));
     store.set('endScores', T.endScores);
     renderTrainStats();
+    if (mode === 'endgame') prepNext();
   };
   l.append(box, fmtScore(v));
   $('end-scores').appendChild(l);
 }
+// Start move range (games start after a random move in it).
+for (const id of ['opt-end-from', 'opt-end-to']) {
+  for (let n = 39; n <= 56; n++) $(id).add(new Option(String(n), String(n)));
+}
+$('opt-end-from').value = String(T.endFrom);
+$('opt-end-to').value = String(T.endTo);
+const setEndRange = (from, to) => {
+  T.endFrom = from; T.endTo = to;
+  $('opt-end-from').value = String(from);
+  $('opt-end-to').value = String(to);
+  store.set('endFrom', from); store.set('endTo', to);
+  renderTrainStats();
+  if (mode === 'endgame') prepNext();
+};
+$('opt-end-from').onchange = (e) => { const v = Number(e.target.value); setEndRange(v, Math.max(v, T.endTo)); };
+$('opt-end-to').onchange = (e) => { const v = Number(e.target.value); setEndRange(Math.min(v, T.endFrom), v); };
+$('opt-end-equal').checked = T.endEqual;
+$('opt-end-equal').onchange = (e) => {
+  T.endEqual = e.target.checked;
+  store.set('endEqual', T.endEqual);
+  if (mode === 'endgame') prepNext();
+};
+// No reviews (Endgame) and Reviews only exclude each other.
+$('opt-end-noreviews').checked = T.endNoReviews;
+$('opt-end-noreviews').onchange = (e) => {
+  T.endNoReviews = e.target.checked;
+  store.set('endNoReviews', T.endNoReviews);
+  if (T.endNoReviews && T.reviewsOnly) { $('opt-reviews-only').checked = false; $('opt-reviews-only').onchange({ target: $('opt-reviews-only') }); }
+};
 // Deadline (date, local midnight): saved positions come up again by then at the latest.
 const DEFAULT_DEADLINE = '2026-11-25';
 function setDeadline(text) {
@@ -1414,7 +1555,16 @@ $('opt-deadline').value = store.get('deadline', DEFAULT_DEADLINE);
 setDeadline($('opt-deadline').value);
 $('opt-deadline').onchange = (e) => { store.set('deadline', e.target.value); setDeadline(e.target.value); renderTrainStats(); };
 $('opt-reviews-only').checked = T.reviewsOnly;
-$('opt-reviews-only').onchange = (e) => { T.reviewsOnly = e.target.checked; store.set('reviewsOnly', T.reviewsOnly); };
+$('opt-reviews-only').onchange = (e) => {
+  T.reviewsOnly = e.target.checked;
+  store.set('reviewsOnly', T.reviewsOnly);
+  if (T.reviewsOnly && T.endNoReviews) { // the two exclude each other
+    T.endNoReviews = false;
+    $('opt-end-noreviews').checked = false;
+    store.set('endNoReviews', false);
+  }
+  if (!T.reviewsOnly && mode === 'endgame') prepNext();
+};
 $('opt-train-cap').value = String(T.cap);
 $('opt-train-cap').onchange = (e) => { T.cap = Number(e.target.value); store.set('trainCap', T.cap); };
 $('btn-train-start').onclick = startLine;
