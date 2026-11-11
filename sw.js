@@ -58,7 +58,9 @@ async function networkFirst(event) {
   key.search = ''; // "?v=…" cache busters share one entry
   const saved = async () => (await cache.match(key.href)) || (req.mode === 'navigate' ? cache.match('index.html') : undefined);
 
-  const net = fetch(req).then((res) => {
+  // no-cache: always ask the server whether the file changed (GitHub Pages lets browsers reuse
+  // files for 10 minutes otherwise); an unchanged file costs only a short "not modified" reply.
+  const net = fetch(req, { cache: 'no-cache' }).then((res) => {
     if (res.ok) event.waitUntil(store(cache, key.href, res.clone())); // save in the background
     return res;
   });
