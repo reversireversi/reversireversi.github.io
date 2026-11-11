@@ -3,8 +3,8 @@ import {
   initialState, playMove, parseTranscript,
 } from './reversi.js';
 import { Engine, toEdaxBoard } from './engine.js';
-import { Book } from './book.js';
-import { Repetition, opponentCandidates, withinMargin, pickRandom } from './train.js';
+import { Book, toStored, fromStored } from './book.js';
+import { Repetition, PositionStats, INTERVALS, opponentCandidates, withinMargin, pickRandom } from './train.js';
 import { dbGet, dbPut, dbDelete, askPersist } from './device-store.js';
 
 // Offline support and "Add to Home Screen" app (see sw.js).
@@ -238,6 +238,8 @@ function clearBoardScores() {
     c.classList.remove('scored', 'peek');
     const s = c.querySelector('.score');
     if (s) s.remove();
+    const p = c.querySelector('.pct');
+    if (p) p.remove();
   }
 }
 
@@ -358,6 +360,7 @@ function paintBoard() {
   if (bookOn && bookInfo) paintScores(bookList(cur(), bookInfo), false);
   else if (edaxView) paintScores(edaxView.res.moves.map((m) => ({ sq: moveSq(m.move), score: m.score })), edaxView.partial);
   else clearBoardScores();
+  paintPct();
 }
 
 function showAnalysis(res, partial, ms) {
@@ -592,6 +595,8 @@ const isTrain = () => mode === 'train' || mode === 'endgame';
 // Separate review lists: book positions (Train) and endgame positions (Train Endgame).
 const srsBook = new Repetition();
 const srsEnd = new Repetition('ot.srsEnd');
+const posStats = new PositionStats(); // Train: answers per position (top 10 mistakes)
+posStats.importMisses(srsBook);
 const srsNow = () => (mode === 'endgame' ? srsEnd : srsBook);
 const END_SCORES = [-6, -4, -2, 0, 2, 4, 6, 8];
 const T = {
@@ -635,6 +640,71 @@ function renderTrainStats() {
   if (end && endPos && endPos.scores) text += ` · Start positions with the ticked scores: ${endPool().length.toLocaleString()}`;
   $('train-stats').textContent = text;
   renderMoveChart();
+  if (!end) { renderWorst(); renderBoxes(); }
+}
+
+// ---------- Most mistakes and review boxes (Train, under the chart) ----------
+const fmtWait = (ms) => (ms < 3600e3 ? `${Math.round(ms / 60e3)} min` : ms < 864e5 ? `${Math.round(ms / 3600e3)} hour${ms < 7200e3 ? '' : 's'}`
+  : `${Math.round(ms / 864e5)} day${ms < 1728e5 ? '' : 's'}`);
+function renderWorst() {
+  const list = $('worst-list');
+  list.innerHTML = '';
+  posStats.worst(prefColors(), 10).forEach((it, i) => {
+    const moves = (it.line.match(/.{2}/g) || []);
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.className = 'worst-row';
+    btn.title = `${it.line} (${colorName(it.color)} to play)`;
+    btn.innerHTML = `<span class="rk">${i + 1}.</span>`
+      + `<span class="ln">Move ${moves.length + 1}, ${colorName(it.color)}<small>…${moves.slice(-4).join(' ')}</small></span>`
+      + `<span class="cnt"><span class="ok" title="correct">${it.c}</span><span class="wa" title="correct with Umigame warning">${it.w}</span>`
+      + `<span class="no" title="wrong">${it.x}</span></span>`;
+    btn.onclick = () => openWorst(it.key);
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+}
+function renderBoxes() {
+  const n = new Array(INTERVALS.length).fill(0);
+  for (const it of Object.values(srsBook.items)) if (prefColors().includes(it.color)) n[Math.min(it.box || 0, n.length - 1)]++;
+  $('box-counts').innerHTML = n.map((k, b) => `<div title="Due again ${fmtWait(INTERVALS[b])} after an answer">Box ${b}<b>${k}</b>${fmtWait(INTERVALS[b])}</div>`).join('');
+}
+
+// A position from "Most mistakes" opened in Analyse: your answers there are shown per move.
+let pctKey = null;
+function openWorst(key) {
+  const it = posStats.get(key);
+  if (!it) return;
+  const { states: parsed } = parseTranscript(it.line);
+  setMode('analyse');
+  pctKey = key;
+  states = parsed;
+  cursor = states.length - 1;
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+// Called after the board is painted in Analyse.
+function paintPct() {
+  for (const el of boardEl.querySelectorAll('.pct')) el.remove();
+  const note = $('pos-history');
+  note.hidden = true;
+  if (mode !== 'analyse' || !pctKey || !book) return;
+  const st = cur();
+  const hit = book.find(st.board, st.toMove);
+  if (!hit || book.recordKey(hit.index) !== pctKey) return;
+  const it = posStats.get(pctKey);
+  const total = Object.values(it.mv).reduce((a, b) => a + b, 0);
+  note.hidden = false;
+  note.textContent = `Your answers here: ${it.c} correct, ${it.w} with Umigame warning, ${it.x} wrong.`
+    + (total ? ` Moves you played: ${Object.entries(it.mv).sort((a, b) => b[1] - a[1])
+      .map(([sq, k]) => `${sqName(fromStored(Number(sq), hit.symmetry))} ${Math.round((100 * k) / total)}%`).join(', ')}.`
+      : ' (Which moves you played is counted from now on.)');
+  for (const [sq, k] of Object.entries(it.mv)) {
+    const el = document.createElement('span');
+    el.className = 'pct';
+    el.textContent = `${Math.round((100 * k) / total)}%`;
+    cells[fromStored(Number(sq), hit.symmetry)].appendChild(el);
+  }
 }
 
 // ---------- Answers by move number (chart under the board) ----------
@@ -716,8 +786,47 @@ function clearMarks() {
   clearBoardScores();
 }
 
+// Each tab keeps its own game when you switch away and back: Analyse its board, Train and
+// Endgame the line in progress (so a line goes on where it was, without pressing Start).
+const tabState = {};
+const BUTTONS = ['btn-train-start', 'btn-train-retry', 'btn-train-accept', 'btn-train-best', 'btn-train-next', 'btn-train-copy'];
+function saveTab() {
+  const s = { states, cursor };
+  if (isTrain()) {
+    if (T.phase === 'idle' || T.phase === 'waiting') { tabState[mode] = s; return; }
+    const fb = $('train-feedback');
+    Object.assign(s, {
+      phase: T.phase, fb: fb.innerHTML, fbClass: fb.className, buttons: BUTTONS.filter((id) => !$(id).hidden),
+      anchor: T.anchor, last: T.last, lastWarn: T.lastWarn, line: T.line, retrying: T.retrying,
+      review: T.review, reviewPly: T.reviewPly, lineColor: T.lineColor,
+    });
+  }
+  tabState[mode] = s;
+}
+// Restore the line saved for the current (training) tab. Returns false if there is none.
+function restoreTrainTab() {
+  const s = tabState[mode];
+  if (!s || !s.phase) return false;
+  Object.assign(T, {
+    phase: s.phase, anchor: s.anchor, last: s.last, lastWarn: s.lastWarn, line: s.line,
+    retrying: s.retrying, review: s.review, reviewPly: s.reviewPly, lineColor: s.lineColor,
+  });
+  $('train-feedback').innerHTML = s.fb;
+  $('train-feedback').className = s.fbClass;
+  showButtons(...s.buttons);
+  render();
+  // A move that was being checked is asked again; a pending trainer move is played now.
+  if (T.phase === 'checking') userTurn();
+  else if (T.phase === 'trainer') trainerTurn();
+  else if (T.phase === 'user' && mode === 'endgame') solve(cur());
+  return true;
+}
+
 function setMode(m) {
+  if (m === mode) return;
+  saveTab();
   mode = m;
+  if (tabState[m]) { states = tabState[m].states; cursor = tabState[m].cursor; }
   document.body.classList.toggle('training', isTrain());
   document.body.classList.toggle('endgame', m === 'endgame');
   $('tab-analyse').classList.toggle('active', m === 'analyse');
@@ -730,6 +839,7 @@ function setMode(m) {
   T.last = null;
   clearMarks();
   placeNav();
+  if (isTrain() && restoreTrainTab()) { renderTrainStats(); return; }
   if (m === 'train') {
     if (engine) engine.cancel();
     setFeedback(book ? 'Choose your colour, then press <b>Start</b>.' : 'Open your book (below), then press <b>Start</b>.');
@@ -1145,6 +1255,7 @@ async function trainClick(sq) {
   const undo = T.retrying ? null : { key, prev: srsBook.get(key) }; // lets Accept revert this record
   if (!T.retrying) {
     srsBook.record(key, lineSoFar(), T.lineColor, correct);
+    posStats.record(key, lineSoFar(), T.lineColor, !correct ? 'x' : warn ? 'w' : 'c', toStored(sq, info.symmetry));
     T.line.total++; T.session.total++;
     if (correct) { T.line.correct++; T.session.correct++; }
     recordMoveStat(cursor + 1, correct, !!warn);
@@ -1315,6 +1426,7 @@ $('btn-train-accept').onclick = () => {
     // Undo the miss, then record it as a correct answer (moves a due review up a box).
     srsNow().put(undo.key, undo.prev);
     srsNow().record(undo.key, lineSoFar(), T.lineColor, true);
+    if (mode === 'train') posStats.accept(undo.key);
     T.line.correct++; (mode === 'endgame' ? T.endSession : T.session).correct++;
     acceptMoveStat(cursor + 1);
   }

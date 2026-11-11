@@ -41,6 +41,20 @@
         <div class="mc-axis" id="mc-axis"></div>
         <div class="mc-info" id="mc-info">Tap or hover a bar for its numbers.</div>
       </div>
+
+      <!-- Train: positions with the most mistakes, and review boxes -->
+      <div class="stat-box train-only tr-book" id="worst-box">
+        <div class="mc-head">
+          <span class="mc-title">Most mistakes</span>
+          <span class="mc-legend"><i class="ok"></i>correct <i class="wa"></i>with Umigame warning <i class="no"></i>wrong</span>
+        </div>
+        <ol class="worst-list" id="worst-list"></ol>
+        <div class="mc-info">Tap a position to open it in Analyse with the moves you played there.</div>
+      </div>
+      <div class="stat-box train-only tr-book" id="boxes-box">
+        <div class="mc-head"><span class="mc-title">Review boxes</span></div>
+        <div class="box-counts" id="box-counts"></div>
+      </div>
     </section>
 
     <aside class="panel">
@@ -151,6 +165,7 @@
           <button id="btn-book-forget" class="link" hidden title="Delete the saved copy of the book (and its Umigame numbers) from this browser">Forget</button>
         </div>
         <div class="engine-status analyse-only" id="book-status"></div>
+        <div class="pos-history analyse-only" id="pos-history" hidden></div>
         <div class="engine-lines analyse-only" id="book-lines"></div>
       </div>
 

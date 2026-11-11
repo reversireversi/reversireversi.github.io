@@ -501,3 +501,38 @@ button, select, .board, .mv, .mc-bars, .tab { touch-action: manipulation; }
   .mc-bars { height: 56px; gap: 1px; }
   .mc-axis { gap: 1px; font-size: 9px; }
 }
+
+/* ---------- Most mistakes and review boxes (Train) ---------- */
+.stat-box {
+  width: calc(var(--board) + 2 * var(--pad));
+  margin-top: 12px; padding: 10px 12px 8px;
+  background: var(--panel); border: 1px solid rgba(255,255,255,.07); border-radius: 12px;
+  font-size: 12px; color: var(--muted);
+}
+.worst-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.worst-list:empty::before { content: "No mistakes saved yet."; }
+.worst-row {
+  width: 100%; display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 8px;
+  padding: 6px 8px; text-align: left; font-size: 12px; background: rgba(255,255,255,.03);
+}
+.worst-row .rk { color: var(--muted); font-variant-numeric: tabular-nums; }
+.worst-row .ln { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.worst-row .ln small { color: var(--muted); font-family: Consolas, "Cascadia Mono", monospace; margin-left: 6px; }
+.worst-row .cnt { display: flex; gap: 8px; font-variant-numeric: tabular-nums; }
+.worst-row .cnt span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 3px; }
+.worst-row .cnt .ok::before { background: #2fbf7a; }
+.worst-row .cnt .wa::before { background: #f0be3c; }
+.worst-row .cnt .no::before { background: #ff6f61; }
+.box-counts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.box-counts div { background: rgba(255,255,255,.04); border-radius: 8px; padding: 6px; text-align: center; }
+.box-counts b { display: block; font-size: 18px; color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* Analyse: share of your answers per move in a position opened from "Most mistakes" */
+.cell .pct {
+  position: absolute; top: 2px; left: 3px; z-index: 3; pointer-events: none;
+  font-size: 10px; font-weight: 700; color: #8fc9ff; text-shadow: 0 1px 2px rgba(0,0,0,.7);
+}
+.pos-history { font-size: 12px; color: #8fc9ff; margin-top: 6px; }
+@media (max-width: 600px) {
+  .stat-box { order: 4; margin-top: 0; padding: 8px 10px 6px; }
+}

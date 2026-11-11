@@ -91,6 +91,63 @@ export class Repetition {
   clear() { this.items = {}; this.save(); }
 }
 
+// Answer history per position (Train), keyed like the review list (book position id):
+//   items[key] = { line, color, c, w, x, mv: { square: count } }
+// c: correct answers, w: correct with an Umigame warning (not included in c), x: wrong answers,
+// mv: moves played there, as squares of the book's stored orientation so that all symmetric
+// lines to the position share them.
+export class PositionStats {
+  constructor(storageKey = 'ot.posStats') {
+    this.storageKey = storageKey;
+    this.items = {};
+    try { this.items = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch { this.items = {}; }
+  }
+
+  save() {
+    try { localStorage.setItem(this.storageKey, JSON.stringify(this.items)); } catch { /* storage full or blocked */ }
+  }
+
+  // Once: mistakes counted by the review list before this history existed.
+  importMisses(srs) {
+    const flag = this.storageKey + '.imported';
+    try { if (localStorage.getItem(flag)) return; } catch { return; }
+    for (const [key, it] of Object.entries(srs.items)) {
+      if (!it.misses || this.items[key]) continue;
+      this.items[key] = { line: it.line, color: it.color, c: 0, w: 0, x: it.misses, mv: {} };
+    }
+    this.save();
+    try { localStorage.setItem(flag, '1'); } catch { /* ignore */ }
+  }
+
+  // outcome: 'c' correct, 'w' correct with warning, 'x' wrong. sq: stored-orientation square.
+  record(key, line, color, outcome, sq) {
+    const it = this.items[key] || (this.items[key] = { line, color, c: 0, w: 0, x: 0, mv: {} });
+    it[outcome]++;
+    it.mv[sq] = (it.mv[sq] || 0) + 1;
+    this.save();
+  }
+
+  // A wrong answer accepted as correct after all.
+  accept(key) {
+    const it = this.items[key];
+    if (!it || !it.x) return;
+    it.x--; it.c++;
+    this.save();
+  }
+
+  get(key) { return this.items[key] || null; }
+
+  // The n positions with the most wrong answers (ties: lower share correct first).
+  worst(colors, n = 10) {
+    const share = (it) => (it.c + it.w) / (it.c + it.w + it.x);
+    return Object.entries(this.items)
+      .filter(([, it]) => it.x > 0 && colors.includes(it.color))
+      .sort((a, b) => b[1].x - a[1].x || share(a[1]) - share(b[1]))
+      .slice(0, n)
+      .map(([key, it]) => ({ key, ...it }));
+  }
+}
+
 // Moves within `margin` discs of the best move and, if `floor` is set, scoring at least `floor`
 // (for the side to move). If no move passes both, the best moves. moves: [{ sq, score }].
 export function withinMargin(moves, margin, floor = null) {

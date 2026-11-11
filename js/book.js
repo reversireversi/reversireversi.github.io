@@ -35,6 +35,11 @@ for (let s = 0; s < 8; s++) {
   SYM.push(t);
 }
 const symMove = (m, s) => (m < 64 ? SYM[s][m] : m);
+const SYM_INV = SYM.map((t) => { const inv = new Uint8Array(64); for (let x = 0; x < 64; x++) inv[t[x]] = x; return inv; });
+// Square conversions between the stored orientation of a record and the board it was found
+// on with symmetry s (from find/probe).
+export const toStored = (sq, s) => (sq < 64 ? SYM_INV[s][sq] : sq);
+export const fromStored = (sq, s) => symMove(sq, s);
 
 // Byte lookup tables for turning a current bitboard (two u32 words) into the stored
 // orientation of symmetry s: stored bit x is current bit SYM[s][x].
