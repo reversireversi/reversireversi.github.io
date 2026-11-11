@@ -672,10 +672,11 @@ function renderBoxes() {
 
 // A position from "Most mistakes" opened in Analyse: your answers there are shown per move.
 let pctKey = null;
-function openWorst(key) {
+// line: transcript to use when the position has no history yet.
+function openWorst(key, line = '') {
   const it = posStats.get(key);
-  if (!it) return;
-  const { states: parsed } = parseTranscript(it.line);
+  if (!it && !line) return;
+  const { states: parsed } = parseTranscript(it ? it.line : line);
   setMode('analyse');
   pctKey = key;
   states = parsed;
@@ -692,7 +693,7 @@ function paintPct() {
   const st = cur();
   const hit = book.find(st.board, st.toMove);
   if (!hit || book.recordKey(hit.index) !== pctKey) return;
-  const it = posStats.get(pctKey);
+  const it = posStats.get(pctKey) || { c: 0, w: 0, x: 0, mv: {} };
   const total = Object.values(it.mv).reduce((a, b) => a + b, 0);
   note.hidden = false;
   note.textContent = `Your answers here: ${it.c} correct, ${it.w} with Umigame warning, ${it.x} wrong.`
@@ -1268,7 +1269,8 @@ async function trainClick(sq) {
     const verdict = warn ? 'correct with warning' : 'correct';
     T.lastWarn = !!warn;
     T.last = `<b>${cursor + 1}.${sqName(sq)} ${fmtScore(r.score)}</b>: ${verdict}.`
-      + (warn ? ` ${warn}` : others.length ? ` Also best: ${others.join(', ')}` : '');
+      + (warn ? ` ${warn}` : others.length ? ` Also best: ${others.join(', ')}.` : '')
+      + mistakeCount(key, true, lineSoFar());
     setFeedback(`<b>${sqName(sq)} ${fmtScore(r.score)}</b>: ${verdict}.`
       + (warn ? `<span class="sub">${warn}</span>`
         : others.length ? `<span class="sub">Also best: ${others.join(', ')}</span>` : ''), warn ? 'warn' : 'good');
@@ -1300,16 +1302,19 @@ async function trainClick(sq) {
 }
 
 // "Mistake made N times here", with a link that opens the position in Analyse (as from Most mistakes).
-function mistakeCount(key) {
+// After a correct move (inline in the result line) the count is shown also when it is 0.
+function mistakeCount(key, inline = false, line = '') {
   const it = posStats.get(key);
-  if (!it || !it.x) return '';
-  return `<span class="sub">Mistake made ${it.x} time${it.x === 1 ? '' : 's'} here. `
-    + `<button class="link" data-open="${key}">Open in Analyse with the moves you played</button></span>`;
+  const x = it ? it.x : 0;
+  if (!x && !inline) return '';
+  const text = `Mistake made ${x} time${x === 1 ? '' : 's'} here. `
+    + `<button class="link" data-open="${key}" data-line="${line}">Open in Analyse with the moves you played</button>`;
+  return inline ? ` ${text}` : `<span class="sub">${text}</span>`;
 }
 // The link lives in the feedback HTML (which is also restored after a tab switch), so listen here.
 $('train-feedback').addEventListener('click', (e) => {
   const b = e.target.closest('[data-open]');
-  if (b) openWorst(b.dataset.open);
+  if (b) openWorst(b.dataset.open, b.dataset.line);
 });
 
 // Train Endgame: a move is correct only if it keeps the exact best result.
