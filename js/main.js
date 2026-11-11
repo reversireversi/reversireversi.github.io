@@ -1306,8 +1306,10 @@ async function trainClick(sq) {
 function mistakeCount(key, inline = false, line = '') {
   const it = posStats.get(key);
   const x = it ? it.x : 0;
+  const n = it ? it.c + it.w + it.x : 0; // answers counted for this position
   if (!x && !inline) return '';
-  const text = `Mistake made ${x} time${x === 1 ? '' : 's'} here. `
+  const times = (k) => `${k} time${k === 1 ? '' : 's'}`;
+  const text = `Mistake made ${times(x)} here. Trained ${times(n)}. `
     + `<button class="link" data-open="${key}" data-line="${line}">Open in Analyse with the moves you played</button>`;
   return inline ? ` ${text}` : `<span class="sub">${text}</span>`;
 }
