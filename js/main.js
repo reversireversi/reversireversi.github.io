@@ -1294,9 +1294,23 @@ async function trainClick(sq) {
   setFeedback(`<b>${sqName(sq)} ${fmtScore(r.score)}</b> `
     + (offBook && loss <= 0 ? 'is not a book move.' : `loses ${loss} disc${loss === 1 ? '' : 's'}${offBook ? ' (not a book move)' : ''}.`)
     + ` Best: <b>${bestMoves.map((m) => sqName(m.sq) + ' ' + fmtScore(m.score)).join(', ')}</b>`
-    + `<span class="sub">Score source: ${r.source}. This position is saved for review.</span>`, 'bad');
+    + `<span class="sub">Score source: ${r.source}. This position is saved for review.</span>`
+    + mistakeCount(key), 'bad');
   showButtons('btn-train-retry', 'btn-train-accept', 'btn-train-best', 'btn-train-next', 'btn-train-copy');
 }
+
+// "Mistake made N times here", with a link that opens the position in Analyse (as from Most mistakes).
+function mistakeCount(key) {
+  const it = posStats.get(key);
+  if (!it || !it.x) return '';
+  return `<span class="sub">Mistake made ${it.x} time${it.x === 1 ? '' : 's'} here. `
+    + `<button class="link" data-open="${key}">Open in Analyse with the moves you played</button></span>`;
+}
+// The link lives in the feedback HTML (which is also restored after a tab switch), so listen here.
+$('train-feedback').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-open]');
+  if (b) openWorst(b.dataset.open);
+});
 
 // Train Endgame: a move is correct only if it keeps the exact best result.
 async function endClick(st, sq) {
