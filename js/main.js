@@ -709,7 +709,11 @@ function paintPct() {
     const el = document.createElement('span');
     el.className = 'pct';
     el.textContent = `${Math.round((100 * k) / total)}%`;
-    cells[fromStored(Number(sq), hit.symmetry)].appendChild(el);
+    // Under the score and Umigame numbers when the square has them, so they never overlap.
+    const cell = cells[fromStored(Number(sq), hit.symmetry)];
+    const score = cell.querySelector('.score');
+    if (score && !score.querySelector('.v')) score.innerHTML = `<span class="v">${score.textContent}</span>`;
+    (score || cell).appendChild(el);
   }
 }
 

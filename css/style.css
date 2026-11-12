@@ -290,6 +290,7 @@ textarea:focus { outline: none; border-color: var(--accent); }
 /* ---------- Edax scores on the board ---------- */
 .cell .score {
   position: absolute; inset: 0;
+  margin: 0; /* not the disc counter's margin (it shares the class name) */
   display: flex; align-items: center; justify-content: center;
   font-weight: 700;
   font-size: calc(var(--board) * 0.034);
@@ -532,6 +533,13 @@ button, select, .board, .mv, .mc-bars, .tab { touch-action: manipulation; }
   position: absolute; top: 2px; left: 3px; z-index: 3; pointer-events: none;
   font-size: 10px; font-weight: 700; color: #8fc9ff; text-shadow: 0 1px 2px rgba(0,0,0,.7);
 }
+/* On a square with a score, the % is the last row under the score and Umigame numbers. */
+.cell .score:has(.pct) { flex-direction: column; line-height: 1; gap: 2px; }
+.cell .score .pct {
+  position: static; font-size: max(10px, calc(var(--board) * 0.019));
+  font-style: normal; text-shadow: 0 1px 2px rgba(0,0,0,.8);
+}
+.cell .score.leaf:has(.pct)::after { content: none; } /* the * goes on the score itself (.v) */
 .pos-history { font-size: 12px; color: #8fc9ff; margin-top: 6px; }
 @media (max-width: 600px) {
   .stat-box { order: 4; margin-top: 0; padding: 8px 10px 6px; }
