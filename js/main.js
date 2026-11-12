@@ -613,6 +613,7 @@ const T = {
   endEqual: store.get('endEqual', true),  // Endgame: each ticked score equally likely (else by book counts)
   lineId: 0,
   reviewsOnly: store.get('reviewsOnly', false),
+  newPct: store.get('newPct', 0), // Train: % chance of a new line even when reviews are due
   reviewPly: 0,           // move number of the reviewed position (cursor there)
   cap: store.get('trainCap', 3),          // seconds for Edax checks and play-on scores; 0 = none
   lineColor: BLACK,
@@ -849,6 +850,7 @@ function setMode(m) {
   T.last = null;
   clearMarks();
   placeNav();
+  syncReviewOpts();
   if (m === 'endgame') prepNext(); // get the next start position ready
   if (isTrain() && restoreTrainTab()) { renderTrainStats(); return; }
   if (m === 'train') {
@@ -1112,7 +1114,12 @@ function startLine() {
   ensureEngine();
   if (mode === 'endgame') { startEndgame(); return; }
 
-  const rev = nextReview(srsBook, prefColors());
+  let rev = nextReview(srsBook, prefColors());
+  let skipped = 0; // due reviews passed over for a new line
+  if (rev && !T.reviewsOnly && T.newPct > 0 && Math.random() * 100 < T.newPct) {
+    skipped = srsBook.due(prefColors()).length;
+    rev = null;
+  }
   if (rev) {
     const { item } = rev;
     const { states: parsed, error } = parseTranscript(item.line);
@@ -1133,7 +1140,8 @@ function startLine() {
   states = [initialState()];
   cursor = 0;
   render();
-  if (cur().toMove === T.lineColor) userTurn(`New line: you play <b>${colorName(T.lineColor)}</b>.`);
+  const waiting = skipped ? ` (${skipped} review${skipped === 1 ? '' : 's'} due)` : '';
+  if (cur().toMove === T.lineColor) userTurn(`New line${waiting}: you play <b>${colorName(T.lineColor)}</b>.`);
   else trainerTurn();
 }
 
@@ -1568,7 +1576,21 @@ $('opt-reviews-only').onchange = (e) => {
     store.set('endNoReviews', false);
   }
   if (!T.reviewsOnly && mode === 'endgame') prepNext();
+  syncReviewOpts();
 };
+// New lines when reviews due (Train) and Reviews only exclude each other: in Train, whichever
+// is on greys out the other.
+for (let p = 0; p <= 100; p += 5) $('opt-new-pct').add(new Option(p + '%', String(p)));
+$('opt-new-pct').value = String(T.newPct);
+$('opt-new-pct').onchange = (e) => { T.newPct = Number(e.target.value); store.set('newPct', T.newPct); syncReviewOpts(); };
+function syncReviewOpts() {
+  const train = mode === 'train';
+  $('opt-new-pct').disabled = T.reviewsOnly;
+  $('opt-reviews-only').disabled = train && T.newPct > 0 && !T.reviewsOnly;
+  $('opt-reviews-only').closest('label').classList.toggle('disabled', $('opt-reviews-only').disabled);
+  $('opt-new-pct').closest('label').classList.toggle('disabled', T.reviewsOnly);
+}
+syncReviewOpts();
 $('opt-train-cap').value = String(T.cap);
 $('opt-train-cap').onchange = (e) => { T.cap = Number(e.target.value); store.set('trainCap', T.cap); };
 $('btn-train-start').onclick = startLine;

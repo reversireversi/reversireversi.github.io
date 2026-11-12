@@ -384,6 +384,7 @@ body.training .mv { cursor: default; }
 .train { margin-bottom: 18px; }
 .train-setup { display: flex; flex-wrap: wrap; gap: 10px 16px; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
 .train-setup label { display: flex; align-items: center; gap: 6px; }
+.train-setup label.disabled { opacity: .4; }
 .feedback {
   min-height: 64px;
   padding: 12px 14px;
