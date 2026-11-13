@@ -545,3 +545,18 @@ button, select, .board, .mv, .mc-bars, .tab { touch-action: manipulation; }
 @media (max-width: 600px) {
   .stat-box { order: 4; margin-top: 0; padding: 8px 10px 6px; }
 }
+
+/* "Save for review" after a correct answer: a small button next to the Analyse link */
+button.save-review { padding: 1px 6px; font-size: 10px; line-height: 1.4; border-radius: 4px; margin-left: 4px; vertical-align: baseline; }
+.saved-review { font-size: 10px; color: var(--muted); margin-left: 4px; white-space: nowrap; }
+
+/* Answer history for a position (Analyse, opened from Train) */
+.pos-history .hist { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.pos-history .hist th { text-align: left; font-weight: 600; padding: 2px 6px 2px 0; border-bottom: 1px solid rgba(255,255,255,.12); }
+.pos-history .hist td { padding: 2px 6px 2px 0; white-space: nowrap; }
+.pos-history .hist td.ok { color: #2fbf7a; }
+.pos-history .hist td.wa { color: #f0be3c; }
+.pos-history .hist td.no { color: #ff6f61; }
+.pos-history .hist td:last-child { white-space: normal; }
+.pos-history .hist .undated td { font-style: italic; }
+.pos-history #hist-all { margin-top: 4px; }

@@ -685,11 +685,39 @@ function openWorst(key, line = '') {
   const { states: parsed } = parseTranscript(it ? it.line : line);
   setMode('analyse');
   pctKey = key;
+  histAll = false;
   states = parsed;
   cursor = states.length - 1;
   render();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+// Each answer in this position, newest first: date and time, move, result.
+let histAll = false; // "Show all" pressed
+const HIST_SHOWN = 20;
+const pad2 = (n) => String(n).padStart(2, '0');
+const fmtWhen = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+const OUTCOME = { c: ['ok', 'correct'], w: ['wa', 'correct, Umigame warning'], x: ['no', 'wrong'], a: ['ok', 'wrong, accepted as correct'] };
+function historyHtml(it, sym) {
+  const h = (it.h || []).slice().reverse();
+  const old = posStats.undated(it);
+  const oldN = old.c + old.w + old.x;
+  if (!h.length && !oldN) return '';
+  const rows = (histAll ? h : h.slice(0, HIST_SHOWN)).map(([t, sq, o, saved]) => {
+    const [cls, text] = OUTCOME[o] || ['', o];
+    return `<tr><td>${fmtWhen(t)}</td><td>${sqName(fromStored(sq, sym))}</td>`
+      + `<td class="${cls}">${text}${saved ? ' · saved for review' : ''}</td></tr>`;
+  });
+  if (oldN && (histAll || h.length <= HIST_SHOWN)) { // after the last dated row
+    const parts = [[old.c, 'correct'], [old.w, 'with Umigame warning'], [old.x, 'wrong']].filter(([k]) => k).map(([k, s]) => `${k} ${s}`);
+    rows.push(`<tr class="undated"><td colspan="3">${h.length ? 'Earlier, ' : ''}no date saved: ${parts.join(', ')}</td></tr>`);
+  }
+  const more = !histAll && h.length > HIST_SHOWN
+    ? `<button class="link" id="hist-all">Show all ${h.length}</button>` : '';
+  return `<table class="hist"><thead><tr><th>When</th><th>Move</th><th>Result</th></tr></thead><tbody>${rows.join('')}</tbody></table>${more}`;
+}
+$('pos-history').addEventListener('click', (e) => {
+  if (e.target.id === 'hist-all') { histAll = true; paintPct(); }
+});
 // Called after the board is painted in Analyse.
 function paintPct() {
   for (const el of boardEl.querySelectorAll('.pct')) el.remove();
@@ -702,10 +730,11 @@ function paintPct() {
   const it = posStats.get(pctKey) || { c: 0, w: 0, x: 0, mv: {} };
   const total = Object.values(it.mv).reduce((a, b) => a + b, 0);
   note.hidden = false;
-  note.textContent = `Your answers here: ${it.c} correct, ${it.w} with Umigame warning, ${it.x} wrong.`
+  note.innerHTML = `Your answers here: ${it.c} correct, ${it.w} with Umigame warning, ${it.x} wrong.`
     + (total ? ` Moves you played: ${Object.entries(it.mv).sort((a, b) => b[1] - a[1])
       .map(([sq, k]) => `${sqName(fromStored(Number(sq), hit.symmetry))} ${Math.round((100 * k) / total)}%`).join(', ')}.`
-      : ' (Which moves you played is counted from now on.)');
+      : ' (Which moves you played is counted from now on.)')
+    + historyHtml(it, hit.symmetry);
   for (const [sq, k] of Object.entries(it.mv)) {
     const el = document.createElement('span');
     el.className = 'pct';
@@ -1434,12 +1463,25 @@ function mistakeCount(key, inline = false, line = '') {
   const times = (k) => `${k} time${k === 1 ? '' : 's'}`;
   const text = `Mistake made ${times(x)} here. Trained ${times(n)}. `
     + `<button class="link" data-open="${key}" data-line="${line}">Open in Analyse with the moves you played</button>`;
-  return inline ? ` ${text}` : `<span class="sub">${text}</span>`;
+  // After a correct answer: save the position for review anyway (Box 0, no mistake counted).
+  const save = ` <button class="save-review" data-save="${key}" data-line="${line}" data-color="${T.lineColor}"`
+    + ` title="Put this position in Box 0 of the review list (due in 10 min); your answer still counts as correct">Save for review</button>`;
+  return inline ? ` ${text}${save}` : `<span class="sub">${text}</span>`;
 }
-// The link lives in the feedback HTML (which is also restored after a tab switch), so listen here.
+const SAVED_HTML = '<span class="saved-review">Saved for review ✓</span>';
+// The links live in the feedback HTML (which is also restored after a tab switch), so listen here.
 $('train-feedback').addEventListener('click', (e) => {
   const b = e.target.closest('[data-open]');
   if (b) openWorst(b.dataset.open, b.dataset.line);
+  const s = e.target.closest('[data-save]');
+  if (s) {
+    const key = s.dataset.save;
+    srsBook.add(key, s.dataset.line, Number(s.dataset.color));
+    posStats.markSaved(key);
+    if (T.last) T.last = T.last.replace(/<button class="save-review"[^>]*>Save for review<\/button>/, SAVED_HTML);
+    s.outerHTML = SAVED_HTML;
+    renderTrainStats();
+  }
 });
 
 // Train Endgame: a move is correct only if it keeps the exact best result.
