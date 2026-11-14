@@ -206,8 +206,34 @@
           <span class="msg" id="msg"></span>
         </div>
       </div>
+
+      <div class="train-only tr-book history-open">
+        <button id="btn-history" class="wide">Training history</button>
+      </div>
     </aside>
   </main>
+
+  <!-- Training history: a page of its own, day by day (Train) -->
+  <section class="history-page" id="history-page" hidden>
+    <div class="hp-head">
+      <button id="btn-history-back">&#x25C0; Back</button>
+      <h2>Training history</h2>
+    </div>
+    <p class="hp-note" id="hp-note"></p>
+    <div class="hp-scroll"><table class="hp-table" id="hp-table"></table></div>
+    <dl class="hp-legend">
+      <dt>Answers</dt><dd>moves you answered in Train (retries not counted)</dd>
+      <dt>Positions</dt><dd>different positions answered</dd>
+      <dt>Correct / Warning / Wrong</dt><dd>correct, correct with an Umigame warning, wrong</dd>
+      <dt>Accepted</dt><dd>wrong answers you accepted as correct</dd>
+      <dt>Trained mistakes</dt><dd>answers in positions you had got wrong at least once before</dd>
+      <dt>Fixed</dt><dd>positions moved up from Box 0 (a due review after a mistake answered correctly)</dd>
+      <dt>New positions</dt><dd>positions answered for the first time</dd>
+      <dt>New, wrong</dt><dd>of those, answered wrong (saved for review after the error)</dd>
+      <dt>Saved, no error</dt><dd>saved for review with the button after a correct answer</dd>
+      <dt>Removed</dt><dd>taken out of the review list with the button</dd>
+    </dl>
+  </section>
   <script type="module" src="js/main.js"></script>
 </body>
 </html>

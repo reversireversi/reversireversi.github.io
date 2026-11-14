@@ -304,6 +304,10 @@ textarea:focus { outline: none; border-color: var(--accent); }
 .cell .score.bad { color: #ffc2b8; }
 .cell .score.partial { opacity: .55; }
 .cell .score.leaf { font-style: italic; opacity: .75; }
+/* Analyse, in book with Edax on: Edax scores of moves the book does not score */
+.cell .score.edax { font-style: italic; font-weight: 400; opacity: .55; }
+.cell .score.edax.partial { opacity: .35; }
+.engine-lines .edax-row { opacity: .6; font-style: italic; }
 .cell .score.leaf::after { content: "*"; font-size: 60%; margin-left: 1px; }
 /* Score with Umigame numbers below it: Black's dark, White's light. */
 .cell .score:has(.umi) { flex-direction: column; gap: 1px; }
@@ -548,7 +552,7 @@ button, select, .board, .mv, .mc-bars, .tab { touch-action: manipulation; }
 
 /* "Save for review" after a correct answer: a small button next to the Analyse link */
 button.save-review { padding: 1px 6px; font-size: 10px; line-height: 1.4; border-radius: 4px; margin-left: 4px; vertical-align: baseline; }
-.saved-review { font-size: 10px; color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.saved-review { font-style: normal; font-size: 10px; color: var(--muted); margin-left: 4px; white-space: nowrap; }
 
 /* Answer history for a position (Analyse, opened from Train) */
 .pos-history .hist { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11px; color: var(--muted); }
@@ -560,3 +564,40 @@ button.save-review { padding: 1px 6px; font-size: 10px; line-height: 1.4; border
 .pos-history .hist td:last-child { white-space: normal; }
 .pos-history .hist .undated td { font-style: italic; }
 .pos-history #hist-all { margin-top: 4px; }
+
+/* Training history: a page of its own instead of the board and panel */
+.history-open { margin-top: 18px; }
+.history-open button { width: 100%; }
+body.history-view main.app { display: none; }
+.history-page { max-width: 1100px; margin: 0 auto; padding: 24px; }
+.history-page[hidden] { display: none; }
+.hp-head { display: flex; align-items: center; gap: 14px; }
+.hp-head h2 { margin: 0; font-size: 20px; font-weight: 600; }
+.hp-note { color: var(--muted); font-size: 12px; margin: 10px 0 12px; }
+.hp-scroll { overflow-x: auto; background: var(--panel); border-radius: 12px; padding: 6px 10px; }
+.hp-table { border-collapse: collapse; font-size: 13px; white-space: nowrap; width: 100%; }
+.hp-table th, .hp-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid rgba(255,255,255,.08); }
+.hp-table thead th { font-size: 11px; font-weight: 600; color: var(--muted); vertical-align: bottom; white-space: normal; min-width: 52px; }
+.hp-table tbody th, .hp-table tfoot th, .hp-table thead th:first-child { text-align: left; position: sticky; left: 0; background: #1b1e22; }
+.hp-table tbody th { font-weight: 500; }
+.hp-table tfoot td, .hp-table tfoot th { font-weight: 700; border-bottom: none; border-top: 1px solid rgba(255,255,255,.25); }
+.hp-table td.zero { color: rgba(255,255,255,.28); }
+.hp-table td.c { color: #2fbf7a; }
+.hp-table td.w { color: #f0be3c; }
+.hp-table td.x { color: #ff6f61; }
+.hp-table td.zero.c, .hp-table td.zero.w, .hp-table td.zero.x { color: rgba(255,255,255,.28); }
+.hp-legend { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 12px; color: var(--muted); margin: 16px 0 0; }
+.hp-legend dt { color: var(--text); font-weight: 600; }
+.hp-legend dd { margin: 0; }
+@media (max-width: 600px) {
+  .history-page { padding: 16px; }
+  .hp-table { font-size: 12px; }
+  .hp-table th, .hp-table td { padding: 5px 6px; }
+  .hp-legend { grid-template-columns: 1fr; gap: 0; }
+  .hp-legend dd { margin-bottom: 6px; }
+}
+/* Phones: figures as rows, days as columns */
+.hp-table.flip thead th { text-align: right; white-space: nowrap; }
+.hp-table.flip thead th:first-child { text-align: left; }
+.hp-table.flip tbody th { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.hp-table.flip td.all { font-weight: 700; border-left: 1px solid rgba(255,255,255,.2); }

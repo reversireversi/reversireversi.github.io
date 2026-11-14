@@ -6,6 +6,7 @@ const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 export const INTERVALS = [10 * MIN, 1 * HOUR, 1 * DAY, 2 * DAY, 4 * DAY];
 const VERSION = '2'; // stored items re-timed to the current INTERVALS
 const HISTORY_MAX = 200; // answers logged per position (Train history in Analyse)
+export const FLAG_SAVED = 1, FLAG_FIXED = 2, FLAG_REMOVED = 4;
 
 export class Repetition {
   constructor(storageKey = 'ot.srs') {
@@ -90,6 +91,14 @@ export class Repetition {
     return { total: all.length, due: all.filter((it) => this.dueAt(it) <= now).length };
   }
 
+  // "Remove from review": out of the review list (answer history and counts stay).
+  remove(key) {
+    if (!this.items[key]) return;
+    delete this.items[key];
+    this.save();
+  }
+  has(key) { return !!this.items[key]; }
+
   // Raw item access, used to undo a record (e.g. when a move is accepted after all).
   get(key) { return this.items[key] ? { ...this.items[key] } : undefined; }
   put(key, item) {
@@ -155,14 +164,17 @@ export class PositionStats {
     this.save();
   }
 
-  // The latest answer was saved for review with the button.
-  markSaved(key) {
+  // Flags on the latest answer (it.h entry [3], bits): FLAG_SAVED "Save for review" pressed,
+  // FLAG_FIXED the answer moved the position up from Box 0, FLAG_REMOVED "Remove from review"
+  // pressed. Older entries hold 1 for saved, which is the same bit.
+  flag(key, bit, on = true) {
     const it = this.items[key];
     const last = it && it.h && it.h[it.h.length - 1];
     if (!last) return;
-    last[3] = 1;
+    last[3] = on ? (last[3] || 0) | bit : (last[3] || 0) & ~bit;
     this.save();
   }
+  markSaved(key) { this.flag(key, FLAG_SAVED); }
 
   // Answers not in the log: { c, w, x }.
   undated(it) {
@@ -181,6 +193,53 @@ export class PositionStats {
       .slice(0, n)
       .map(([key, it]) => ({ key, ...it }));
   }
+}
+
+// Training history, day by day, rebuilt from the answer logs of PositionStats (Train only).
+// colors: sides to include. fixedSince: time from which answers carry FLAG_FIXED; before it,
+// "fixed" is estimated as a correct answer at least 10 minutes after a wrong (or saved) one.
+// Returns [{ day: 'YYYY-MM-DD', answers, positions, c, w, x, a, trained, fixed, newPos,
+// newWrong, saved, removed }], newest day first. Answers from before the log have no date
+// and are left out.
+export function dailyHistory(stats, colors, fixedSince) {
+  const days = new Map();
+  const pad = (n) => String(n).padStart(2, '0');
+  const dayOf = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  const get = (day) => {
+    let d = days.get(day);
+    if (!d) {
+      d = { day, answers: 0, pos: new Set(), c: 0, w: 0, x: 0, a: 0, trained: 0, fixed: 0, newPos: 0, newWrong: 0, saved: 0, removed: 0 };
+      days.set(day, d);
+    }
+    return d;
+  };
+  for (const [key, it] of Object.entries(stats.items)) {
+    if (!it.h || !colors.includes(it.color)) continue;
+    const old = it.old || { c: 0, w: 0, x: 0 };
+    let hadWrong = old.x > 0;
+    let prev = null;
+    it.h.forEach(([t, , o, f = 0], i) => {
+      const d = get(dayOf(t));
+      d.answers++;
+      d.pos.add(key);
+      if (o in d) d[o]++;
+      if (hadWrong) d.trained++;
+      const right = o === 'c' || o === 'w' || o === 'a';
+      if (t >= fixedSince) { if (f & FLAG_FIXED) d.fixed++; }
+      else if (right && prev && (prev[2] === 'x' || (prev[3] & FLAG_SAVED)) && t - prev[0] >= INTERVALS[0]) d.fixed++;
+      if (i === 0 && old.c + old.w + old.x === 0) {
+        d.newPos++;
+        if (o === 'x') d.newWrong++;
+      }
+      if (f & FLAG_SAVED) d.saved++;
+      if (f & FLAG_REMOVED) d.removed++;
+      if (o === 'x') hadWrong = true;
+      prev = [t, 0, o, f];
+    });
+  }
+  return [...days.values()]
+    .map(({ pos, ...d }) => ({ ...d, positions: pos.size }))
+    .sort((a, b) => (a.day < b.day ? 1 : -1));
 }
 
 // Moves within `margin` discs of the best move and, if `floor` is set, scoring at least `floor`

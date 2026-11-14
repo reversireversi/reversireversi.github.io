@@ -4,7 +4,10 @@ import {
 } from './reversi.js';
 import { Engine, toEdaxBoard } from './engine.js';
 import { Book, toStored, fromStored } from './book.js';
-import { Repetition, PositionStats, INTERVALS, opponentCandidates, withinMargin, pickRandom } from './train.js';
+import {
+  Repetition, PositionStats, INTERVALS, opponentCandidates, withinMargin, pickRandom,
+  dailyHistory, FLAG_FIXED, FLAG_REMOVED,
+} from './train.js';
 import { dbGet, dbPut, dbDelete, askPersist } from './device-store.js';
 
 // Offline support and "Add to Home Screen" app (see sw.js).
@@ -248,11 +251,14 @@ function paintScores(list, partial) {
   clearBoardScores();
   const shown = list.filter((m) => m.sq < 64);
   if (!shown.length) return;
-  const best = Math.max(...shown.map((m) => m.score));
+  // Edax scores added among book scores (m.edax) never take the "best" mark.
+  const main = shown.filter((m) => !m.edax);
+  const best = Math.max(...(main.length ? main : shown).map((m) => m.score));
   for (const m of shown) {
     const el = document.createElement('div');
-    el.className = 'score' + (m.score === best ? ' best' : best - m.score >= 6 ? ' bad' : '')
-      + (m.leaf ? ' leaf' : '') + (partial ? ' partial' : '');
+    el.className = 'score' + (m.edax ? ' edax' : m.score === best ? ' best' : best - m.score >= 6 ? ' bad' : '')
+      + (m.leaf ? ' leaf' : '') + (partial || m.partial ? ' partial' : '');
+    if (m.edax) el.title = 'Edax score (not in book)';
     el.textContent = fmtScore(m.score);
     if (m.umi) {
       // Umigame numbers of the position after this move: Black's (dark) and White's (light),
@@ -357,10 +363,35 @@ function paintBoard() {
     for (const c of cells) c.classList.remove('wrong', 'right');
     if (T.phase === 'wrong' && atAnchor()) { paintAnchorMarks(); return; }
   }
-  if (bookOn && bookInfo) paintScores(bookList(cur(), bookInfo), false);
+  if (bookOn && bookInfo) paintScores(bookList(cur(), bookInfo).concat(edaxExtra()), false);
   else if (edaxView) paintScores(edaxView.res.moves.map((m) => ({ sq: moveSq(m.move), score: m.score })), edaxView.partial);
   else clearBoardScores();
   paintPct();
+}
+
+// Analyse with Book and Edax on, in book: Edax scores for the legal moves that have no book
+// score, drawn dimmer (`edax`). [] otherwise.
+function edaxExtra() {
+  if (mode !== 'analyse' || !analysisOn || !edaxView || !bookInfo) return [];
+  const has = new Set(bookInfo.moves.map((m) => m.sq));
+  return edaxView.res.moves.filter((m) => /^[a-h][1-8]$/.test(m.move))
+    .map((m) => ({ sq: moveSq(m.move), score: m.score, edax: true, partial: edaxView.partial }))
+    .filter((m) => !has.has(m.sq));
+}
+// The same moves as rows under the book moves, marked "Edax".
+function showEdaxBookRows() {
+  const lines = $('book-lines');
+  lines.querySelectorAll('.edax-row').forEach((r) => r.remove());
+  for (const m of edaxExtra()) {
+    const row = document.createElement('div');
+    row.className = 'eline edax-row';
+    row.innerHTML = `<span class="m">${sqName(m.sq)}</span><span class="s">${fmtScore(m.score)}</span>`
+      + `<span class="pv">Edax${m.partial ? ' (quick)' : ''} · not in book</span>`;
+    row.onmouseenter = () => cells[m.sq].classList.add('peek');
+    row.onmouseleave = () => cells[m.sq].classList.remove('peek');
+    row.onclick = () => onCell(m.sq);
+    lines.appendChild(row);
+  }
 }
 
 function showAnalysis(res, partial, ms) {
@@ -368,6 +399,7 @@ function showAnalysis(res, partial, ms) {
   const moves = (res.moves || []).slice().sort((a, b) => b.score - a.score);
   edaxView = moves.length ? { res: { ...res, moves }, partial } : null;
   paintBoard();
+  showEdaxBookRows();
   if (!moves.length) return;
   const best = moves[0].score;
 
@@ -639,15 +671,64 @@ function showButtons(...ids) {
 }
 
 function renderTrainStats() {
+  renderStatsLine();
+  renderMoveChart();
+  if (mode !== 'endgame') { renderWorst(); renderBoxes(); }
+}
+function renderStatsLine() {
   const end = mode === 'endgame';
   const c = srsNow().count(end ? [BLACK, WHITE] : prefColors());
   const s = end ? T.endSession : T.session;
   let text = `Session: ${s.correct}/${s.total} correct · Reviews due: ${c.due} · Saved positions: ${c.total}`;
   if (end && endPos && endPos.byKey) text += ` · Book positions to start from: ${endCount().toLocaleString()}`;
   $('train-stats').textContent = text;
-  renderMoveChart();
-  if (!end) { renderWorst(); renderBoxes(); }
 }
+// ---------- Training history (a page of its own, opened from the bottom of Train) ----------
+// Answers carry the "fixed" flag from this time on; before it, fixed is estimated.
+if (!store.get('fixedLogSince', 0)) store.set('fixedLogSince', Date.now());
+const HP_COLS = [
+  ['answers', 'Answers'], ['positions', 'Positions'], ['c', 'Correct'], ['w', 'Warning'], ['x', 'Wrong'],
+  ['a', 'Accepted'], ['trained', 'Trained mistakes'], ['fixed', 'Fixed'], ['newPos', 'New positions'],
+  ['newWrong', 'New, wrong'], ['saved', 'Saved, no error'], ['removed', 'Removed'],
+];
+function renderHistory() {
+  const colors = prefColors();
+  const days = dailyHistory(posStats, colors, store.get('fixedLogSince', 0));
+  const who = T.colorPref === 3 ? 'Black and White' : colorName(T.colorPref);
+  $('hp-note').textContent = days.length
+    ? `Train, you play ${who} (follows "You play"). Days are counted from when each answer started being saved with its date; older answers have no date and are not included.`
+    : `No dated Train answers yet for ${who}.`;
+  const cell = (d, k) => `<td class="${k}${d[k] ? '' : ' zero'}">${d[k]}</td>`;
+  const sum = { day: 'All days' };
+  for (const [k] of HP_COLS) sum[k] = days.reduce((s, d) => s + d[k], 0);
+  sum.positions = '–'; // positions repeat across days
+  const fmtDay = (s) => new Date(s + 'T12:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const t = $('hp-table');
+  t.classList.toggle('flip', phone.matches);
+  if (!days.length) { t.innerHTML = ''; return; }
+  if (phone.matches) { // phones: one row per figure, one column per day (newest first), then all days
+    t.innerHTML = `<thead><tr><th></th>${days.map((d) => `<th>${fmtDay(d.day)}</th>`).join('')}<th>${sum.day}</th></tr></thead><tbody>`
+      + HP_COLS.map(([k, name]) => `<tr><th>${name}</th>${days.map((d) => cell(d, k)).join('')}<td class="${k} all${sum[k] ? '' : ' zero'}">${sum[k]}</td></tr>`).join('')
+      + '</tbody>';
+    return;
+  }
+  t.innerHTML = `<thead><tr><th>Day</th>${HP_COLS.map(([, n]) => `<th>${n}</th>`).join('')}</tr></thead><tbody>`
+    + days.map((d) => `<tr><th>${fmtDay(d.day)}</th>${HP_COLS.map(([k]) => cell(d, k)).join('')}</tr>`).join('')
+    + `</tbody><tfoot><tr><th>${sum.day}</th>${HP_COLS.map(([k]) => `<td class="${k}${sum[k] ? '' : ' zero'}">${sum[k]}</td>`).join('')}</tr></tfoot>`;
+}
+function showHistory(on) {
+  document.body.classList.toggle('history-view', on);
+  $('history-page').hidden = !on;
+  if (on) renderHistory();
+  window.scrollTo(0, 0);
+}
+$('btn-history').onclick = () => showHistory(true);
+$('btn-history-back').onclick = () => showHistory(false);
+
+// Positions become due as time passes: keep "Reviews due" current (also when the app comes back
+// to the front after a pause, as on a phone).
+setInterval(() => { if (isTrain()) renderStatsLine(); }, 60e3);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && isTrain()) renderStatsLine(); });
 
 // ---------- Most mistakes and review boxes (Train, under the chart) ----------
 const fmtWait = (ms) => (ms < 3600e3 ? `${Math.round(ms / 60e3)} min` : ms < 864e5 ? `${Math.round(ms / 3600e3)} hour${ms < 7200e3 ? '' : 's'}`
@@ -1141,6 +1222,7 @@ function startLine() {
   T.line = { correct: 0, total: 0 };
   T.retrying = false;
   ensureEngine();
+  renderTrainStats(); // "Reviews due" counted now, as the review picked below
   if (mode === 'endgame') { startEndgame(); return; }
 
   let rev = nextReview(srsBook, prefColors());
@@ -1407,8 +1489,9 @@ async function trainClick(sq) {
   const key = book.recordKey(info.index);
   const undo = T.retrying ? null : { key, prev: srsBook.get(key) }; // lets Accept revert this record
   if (!T.retrying) {
-    srsBook.record(key, lineSoFar(), T.lineColor, correct);
+    const fixed = recordReview(srsBook, key, lineSoFar(), T.lineColor, correct);
     posStats.record(key, lineSoFar(), T.lineColor, !correct ? 'x' : warn ? 'w' : 'c', toStored(sq, info.symmetry));
+    if (fixed) posStats.flag(key, FLAG_FIXED);
     T.line.total++; T.session.total++;
     if (correct) { T.line.correct++; T.session.correct++; }
     recordMoveStat(cursor + 1, correct, !!warn);
@@ -1463,25 +1546,59 @@ function mistakeCount(key, inline = false, line = '') {
   const times = (k) => `${k} time${k === 1 ? '' : 's'}`;
   const text = `Mistake made ${times(x)} here. Trained ${times(n)}. `
     + `<button class="link" data-open="${key}" data-line="${line}">Open in Analyse with the moves you played</button>`;
-  // After a correct answer: save the position for review anyway (Box 0, no mistake counted).
-  const save = ` <button class="save-review" data-save="${key}" data-line="${line}" data-color="${T.lineColor}"`
-    + ` title="Put this position in Box 0 of the review list (due in 10 min); your answer still counts as correct">Save for review</button>`;
-  return inline ? ` ${text}${save}` : `<span class="sub">${text}</span>`;
+  const btns = reviewButtons({ key, line: line || lineSoFar(), color: T.lineColor, mistake: !inline });
+  return inline ? ` ${text}${btns}` : `<span class="sub">${text}${btns}</span>`;
 }
-const SAVED_HTML = '<span class="saved-review">Saved for review ✓</span>';
+
+// Records an answer in the review list; true if it moved the position up from Box 0 ("fixed").
+function recordReview(srs, key, line, color, correct) {
+  const before = srs.get(key);
+  srs.record(key, line, color, correct);
+  const after = srs.get(key);
+  return !!(correct && before && after && (before.box || 0) === 0 && after.box > 0);
+}
+
+// Small buttons after an answer: "Save for review" (after a correct answer: Box 0, the answer
+// still counts as correct) and "Remove from review" (while the position is in the review list;
+// the answer history and counts stay). done: 'saved' | 'removed' after a press.
+function reviewButtons({ key, line, color, mistake, done = '' }) {
+  const attrs = `data-key="${key}" data-line="${line}" data-color="${color}" data-mistake="${mistake ? 1 : ''}"`;
+  let html = '';
+  if (!mistake) {
+    html += done === 'saved' ? ' <em class="saved-review">Saved for review ✓</em>'
+      : ` <button class="save-review" data-rv="save" title="Put this position in Box 0 of the review list (due in 10 min); your answer still counts as correct">Save for review</button>`;
+  }
+  if (done === 'removed') html += ' <em class="saved-review">Removed from review ✓</em>';
+  else if (srsBook.has(key)) {
+    html += ` <button class="save-review" data-rv="remove" title="Take this position out of the review list. Your answers and mistake counts stay.">Remove from review</button>`;
+  }
+  return `<span class="rv" ${attrs}>${html}</span>`;
+}
 // The links live in the feedback HTML (which is also restored after a tab switch), so listen here.
 $('train-feedback').addEventListener('click', (e) => {
   const b = e.target.closest('[data-open]');
   if (b) openWorst(b.dataset.open, b.dataset.line);
-  const s = e.target.closest('[data-save]');
-  if (s) {
-    const key = s.dataset.save;
-    srsBook.add(key, s.dataset.line, Number(s.dataset.color));
+  const r = e.target.closest('[data-rv]');
+  if (!r) return;
+  const box = r.closest('.rv');
+  const { key, line } = box.dataset;
+  const color = Number(box.dataset.color), mistake = !!box.dataset.mistake;
+  let done;
+  if (r.dataset.rv === 'save') {
+    srsBook.add(key, line, color);
     posStats.markSaved(key);
-    if (T.last) T.last = T.last.replace(/<button class="save-review"[^>]*>Save for review<\/button>/, SAVED_HTML);
-    s.outerHTML = SAVED_HTML;
-    renderTrainStats();
+    posStats.flag(key, FLAG_REMOVED, false);
+    done = 'saved';
+  } else {
+    srsBook.remove(key);
+    posStats.flag(key, FLAG_REMOVED);
+    if (T.anchor && T.anchor.undo && T.anchor.undo.key === key) T.anchor.undo.removed = true; // for Accept
+    done = 'removed';
   }
+  const html = reviewButtons({ key, line, color, mistake, done });
+  if (T.last) T.last = T.last.replace(new RegExp(`<span class="rv" data-key="${key}"[\\s\\S]*?</span>`), html);
+  box.outerHTML = html;
+  renderTrainStats();
 });
 
 // Train Endgame: a move is correct only if it keeps the exact best result.
@@ -1664,8 +1781,12 @@ $('btn-train-accept').onclick = () => {
   if (undo) {
     // Undo the miss, then record it as a correct answer (moves a due review up a box).
     srsNow().put(undo.key, undo.prev);
-    srsNow().record(undo.key, lineSoFar(), T.lineColor, true);
-    if (mode === 'train') posStats.accept(undo.key);
+    const fixed = recordReview(srsNow(), undo.key, lineSoFar(), T.lineColor, true);
+    if (undo.removed) srsNow().remove(undo.key); // "Remove from review" was pressed after the mistake
+    if (mode === 'train') {
+      posStats.accept(undo.key);
+      if (fixed) posStats.flag(undo.key, FLAG_FIXED);
+    }
     T.line.correct++; (mode === 'endgame' ? T.endSession : T.session).correct++;
     acceptMoveStat(cursor + 1);
   }
