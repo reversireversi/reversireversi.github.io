@@ -167,6 +167,8 @@ function render(animate = false) {
   renderExplore();
   const ta = $('transcript');
   if (document.activeElement !== ta) ta.value = transcript();
+  const ar = $('add-review');
+  if (!ar.hidden && ar.pos !== cur()) ar.hidden = true; // "Add to review" message is for another position
   requestAnalysis();
 }
 
@@ -1879,6 +1881,47 @@ $('btn-load').onclick = () => {
   if (error) setMsg(error + '. Loaded up to there.', true);
   else setMsg(`Loaded ${states.length - 1} moves`);
 };
+
+// Analyse: "Add to review" puts the position on the board in the Train review list (Box 0),
+// with the side to move as the colour. Already saved: kept as is; outside Box 0 it offers to
+// put it back in Box 0.
+// The message is about one position: render() hides it when another one is shown.
+function showAddReview(html) {
+  const el = $('add-review');
+  el.innerHTML = html;
+  el.hidden = !html;
+  el.pos = html ? cur() : null;
+}
+$('btn-add-review').onclick = () => {
+  const st = cur();
+  const hit = book && !st.over ? book.find(st.board, st.toMove) : null;
+  if (!hit) {
+    showAddReview(book ? 'Not added: this position is not in the book.' : 'Not added: open your book first.');
+    return;
+  }
+  const key = book.recordKey(hit.index);
+  const color = st.toMove, side = color === BLACK ? 'Black' : 'White';
+  const it = srsBook.get(key);
+  if (!it) {
+    srsBook.add(key, lineSoFar(), color);
+    renderTrainStats();
+    showAddReview(`Added to review: you play <b>${side}</b> here, Box 0, due in 10 min.`);
+  } else if ((it.box || 0) === 0) {
+    showAddReview('Already in review (Box 0).');
+  } else {
+    showAddReview(`Already in review (Box ${it.box}). Put in Box 0? `
+      + `<button class="small" data-box0="${key}" data-color="${color}">Yes</button> `
+      + '<button class="small" data-box0="">No</button>');
+  }
+};
+$('add-review').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-box0]');
+  if (!b) return;
+  if (!b.dataset.box0) { showAddReview(''); return; }
+  srsBook.add(b.dataset.box0, lineSoFar(), Number(b.dataset.color));
+  renderTrainStats();
+  showAddReview('Put back in Box 0, due in 10 min.');
+});
 
 $('btn-copy').onclick = async () => {
   try { await navigator.clipboard.writeText(transcript()); setMsg('Copied'); }

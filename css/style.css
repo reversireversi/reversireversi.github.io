@@ -283,7 +283,10 @@ textarea {
 }
 textarea:focus { outline: none; border-color: var(--accent); }
 
-.row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.add-review { font-size: 13px; color: var(--muted); margin-top: 8px; }
+.add-review b { color: var(--text, inherit); }
+.add-review button { margin-left: 4px; }
 .msg { font-size: 12px; color: var(--muted); }
 .msg.err { color: #ff7b72; }
 

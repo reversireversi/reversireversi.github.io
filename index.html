@@ -159,6 +159,15 @@
             </select>
           </label>
         </div>
+        <div class="section-title">Transcript</div>
+        <textarea id="transcript" spellcheck="false" placeholder="Paste a game, e.g. f5d6c3d3c4f4"></textarea>
+        <div class="row">
+          <button id="btn-load">Load</button>
+          <button id="btn-copy">Copy</button>
+          <button id="btn-add-review" title="Put the position on the board in your Train review list (Box 0, due in 10 min), with the side to move as your colour. Only for book positions.">Add to review</button>
+          <span class="msg" id="msg"></span>
+        </div>
+        <div class="add-review" id="add-review" hidden></div>
       </div>
 
       <div class="engine">
@@ -196,16 +205,6 @@
 
       <div class="section-title">Moves</div>
       <div class="moves" id="moves"></div>
-
-      <div class="analyse-only">
-        <div class="section-title">Transcript</div>
-        <textarea id="transcript" spellcheck="false" placeholder="Paste a game, e.g. f5d6c3d3c4f4"></textarea>
-        <div class="row">
-          <button id="btn-load">Load</button>
-          <button id="btn-copy">Copy</button>
-          <span class="msg" id="msg"></span>
-        </div>
-      </div>
 
       <div class="train-only tr-book history-open">
         <button id="btn-history" class="wide">Training history</button>
