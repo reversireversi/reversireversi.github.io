@@ -15,6 +15,12 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+  <!-- Shown when the training data could not be read or saved -->
+  <div class="storage-warn" id="storage-warn" role="alert" hidden>
+    <span id="storage-warn-text"></span>
+    <button id="storage-warn-export" class="small">Export backup</button>
+    <button id="storage-warn-close" class="small" title="Hide (it comes back if saving fails again)">&times;</button>
+  </div>
   <main class="app">
     <section class="board-area">
       <div class="frame">
@@ -208,6 +214,18 @@
 
       <div class="train-only tr-book history-open">
         <button id="btn-history" class="wide">Training history</button>
+      </div>
+
+      <!-- Backup of the training data (review lists, answer history, settings) to a file -->
+      <div class="train-only backup-box">
+        <div class="section-title">Backup</div>
+        <div class="backup-actions">
+          <button id="btn-export" title="Save your review lists, answer history and settings to a file">Export backup</button>
+          <button id="btn-import" title="Add the positions from a backup file. Positions already here are never changed.">Import backup…</button>
+          <input type="file" id="import-file" accept=".json,application/json" hidden>
+        </div>
+        <div class="backup-info" id="backup-info"></div>
+        <div class="backup-info" id="storage-info"></div>
       </div>
     </aside>
   </main>

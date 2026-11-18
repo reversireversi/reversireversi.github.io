@@ -6,7 +6,7 @@ import { Engine, toEdaxBoard } from './engine.js';
 import { Book, toStored, fromStored } from './book.js';
 import {
   Repetition, PositionStats, INTERVALS, opponentCandidates, withinMargin, pickRandom,
-  dailyHistory, FLAG_FIXED, FLAG_REMOVED,
+  dailyHistory, FLAG_FIXED, FLAG_REMOVED, storageIssue, reportStorage,
 } from './train.js';
 import { dbGet, dbPut, dbDelete, askPersist } from './device-store.js';
 
@@ -18,7 +18,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 // ---------- Settings (per browser) ----------
 const store = {
   get(k, d) { try { const v = localStorage.getItem('ot.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem('ot.' + k, JSON.stringify(v)); } catch { /* ignore */ } },
+  set(k, v) { try { localStorage.setItem('ot.' + k, JSON.stringify(v)); } catch { reportStorage('save', 'ot.' + k); } },
 };
 
 // ---------- Game state ----------
@@ -28,6 +28,20 @@ const cur = () => states[cursor];
 
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
+
+// Warning at the top when the training data could not be read or saved (see train.js).
+const storageProblems = { load: new Set(), save: new Set() };
+storageIssue.onError = (kind, key) => {
+  (storageProblems[kind] || storageProblems.save).add(key);
+  $('storage-warn-text').textContent = storageProblems.load.size
+    ? 'Some saved training data could not be read. It is kept exactly as it is and nothing is saved over it, '
+      + 'so new answers are not being saved now. Export a backup, then close and reopen the app.'
+    : 'Could not save your training (storage full or blocked). Everything saved before is safe, '
+      + 'but new answers are not being saved. Export a backup now.';
+  $('storage-warn').hidden = false;
+};
+$('storage-warn-close').onclick = () => { $('storage-warn').hidden = true; };
+
 const boardEl = $('board');
 const cells = [];
 const discEls = new Array(64).fill(null);
@@ -733,6 +747,124 @@ function showHistory(on) {
 }
 $('btn-history').onclick = () => showHistory(true);
 $('btn-history-back').onclick = () => showHistory(false);
+
+// ---------- Backup ----------
+// Export: every 'ot.' entry of this browser's storage (review lists, answer history, settings),
+// copied as stored, to a file. Import: adds what this device does not have yet; a position
+// already here is never changed and nothing is deleted.
+const BACKUP_APP = 'reversi-trainer-backup';
+const REVIEW_STORES = () => [
+  [srsBook, 'ot.srs', 'Train review positions'],
+  [srsEnd, 'ot.srsEnd', 'Endgame review positions'],
+  [posStats, 'ot.posStats', 'positions with answer history'],
+];
+const countIn = (raw) => { try { return Object.keys(JSON.parse(raw || '{}') || {}).length; } catch { return 0; } };
+
+function renderBackupInfo() {
+  const last = store.get('lastExport', 0);
+  $('backup-info').textContent = last ? `Last export: ${fmtWhen(last)}.` : 'Not exported from this device yet.';
+}
+
+function saveFile(file) {
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url; a.download = file.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60e3);
+}
+
+async function exportBackup() {
+  const data = {};
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ot.') && k !== 'ot.lastExport') data[k] = localStorage.getItem(k);
+    }
+  } catch {
+    alert('Could not read the saved training data to export it.');
+    return;
+  }
+  const now = Date.now(), d = new Date(now);
+  const counts = Object.fromEntries(REVIEW_STORES().map(([, k]) => [k, countIn(data[k])]));
+  const json = JSON.stringify({ app: BACKUP_APP, format: 1, exported: now, counts, data });
+  const name = `reversi-trainer-backup-${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}.json`;
+  // Phones: the share sheet ("Save to Files", iCloud Drive, mail…); computers: a download.
+  const coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+  let shared = false;
+  if (coarse && navigator.share && navigator.canShare) {
+    for (const type of ['application/json', 'text/plain']) {
+      const file = new File([json], name, { type });
+      if (!navigator.canShare({ files: [file] })) continue;
+      try { await navigator.share({ files: [file] }); shared = true; } catch (e) { if (e && e.name === 'AbortError') return; }
+      break;
+    }
+  }
+  if (!shared) saveFile(new File([json], name, { type: 'application/json' }));
+  store.set('lastExport', now);
+  renderBackupInfo();
+}
+$('btn-export').onclick = exportBackup;
+$('storage-warn-export').onclick = exportBackup;
+
+$('btn-import').onclick = () => $('import-file').click();
+$('import-file').onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  let b;
+  try { b = JSON.parse(await f.text()); } catch { b = null; }
+  if (!b || b.app !== BACKUP_APP || !b.data || typeof b.data !== 'object') {
+    alert('This file is not a Reversi Trainer backup.');
+    return;
+  }
+  const stores = REVIEW_STORES();
+  if (stores.some(([s]) => !s.loadOk)) {
+    alert('The training data on this device could not be read, so nothing is imported into it. Close and reopen the app, then try again.');
+    return;
+  }
+  const parse = (k) => { try { const v = JSON.parse(b.data[k] || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; } };
+  const adds = stores.map(([s, k, label]) => {
+    const imp = parse(k);
+    const keys = Object.keys(imp).filter((key) => !(key in s.items));
+    return { s, imp, keys, label, kept: Object.keys(imp).length - keys.length };
+  });
+  // Other entries (settings, answers by move…) only where this device has none.
+  const others = Object.keys(b.data).filter((k) => k.startsWith('ot.') && k !== 'ot.lastExport'
+    && !stores.some(([, sk]) => sk === k) && typeof b.data[k] === 'string' && localStorage.getItem(k) === null);
+  const total = adds.reduce((n, a) => n + a.keys.length, 0);
+  if (!total && !others.length) {
+    alert('Nothing to add: everything in this backup is already on this device.');
+    return;
+  }
+  const when = b.exported ? fmtWhen(b.exported) : 'unknown date';
+  const lines = adds.map((a) => `• ${a.keys.length} new ${a.label}${a.kept ? ` (${a.kept} already here, kept as they are)` : ''}`);
+  if (!confirm(`Import the backup from ${when}?\n\n${lines.join('\n')}\n\nNothing on this device is changed or deleted; only new positions are added.`)) return;
+  let ok = true;
+  for (const a of adds) {
+    if (!a.keys.length) continue;
+    for (const key of a.keys) a.s.items[key] = a.imp[key];
+    ok = a.s.save() && ok;
+  }
+  for (const k of others) { try { localStorage.setItem(k, b.data[k]); } catch { ok = false; } }
+  if (!ok) { alert('Could not save everything (storage full or blocked). Nothing already on this device was changed.'); return; }
+  alert(`Imported: ${adds.map((a) => `${a.keys.length} ${a.label}`).join(', ')}. The app reloads now.`);
+  location.reload();
+};
+
+// Ask the browser to keep this data even when space runs low, and show whether it agreed.
+async function renderStorageInfo() {
+  const el = $('storage-info');
+  if (!navigator.storage || !navigator.storage.persisted) {
+    el.textContent = 'Storage protection: not offered by this browser. Export backups now and then.';
+    return;
+  }
+  let on = false;
+  try { on = await navigator.storage.persisted(); } catch { /* ignore */ }
+  if (!on) on = await askPersist();
+  el.innerHTML = on
+    ? '<span class="good">Storage protected</span>: the browser will not clear it to free space.'
+    : '<span class="bad">Storage not protected</span>: the device may clear it when space runs low. Export backups now and then.';
+}
 
 // Positions become due as time passes: keep "Reviews due" current (also when the app comes back
 // to the front after a pause, as on a phone).
@@ -1981,3 +2113,5 @@ document.addEventListener('keydown', (e) => {
 
 render();
 setMode('train'); // the app opens on Train
+renderBackupInfo();
+renderStorageInfo(); // also asks for protected storage on every start

@@ -8,13 +8,42 @@ const VERSION = '2'; // stored items re-timed to the current INTERVALS
 const HISTORY_MAX = 200; // answers logged per position (Train history in Analyse)
 export const FLAG_SAVED = 1, FLAG_FIXED = 2, FLAG_REMOVED = 4;
 
+// ---------- Safe storage of the training data ----------
+// Storage problems are passed to storageIssue.onError(kind, key) (set by the page):
+//   'load'  saved data exists but could not be read: it is left untouched and never saved over;
+//   'save'  writing failed (storage full or blocked): the data saved before stays as it was.
+export const storageIssue = { onError: null };
+export function reportStorage(kind, key) {
+  try { if (storageIssue.onError) storageIssue.onError(kind, key); } catch { /* ignore */ }
+}
+
+// Reads a stored object: { items, ok }. ok is false when something is stored under the key but
+// cannot be read; the caller must then not save over it.
+export function loadItems(key) {
+  let raw;
+  try { raw = localStorage.getItem(key); } catch { reportStorage('load', key); return { items: {}, ok: false }; }
+  if (raw === null) return { items: {}, ok: true };
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object' && !Array.isArray(v)) return { items: v, ok: true };
+  } catch { /* fall through */ }
+  reportStorage('load', key);
+  return { items: {}, ok: false };
+}
+
+function saveItems(key, items, ok) {
+  if (!ok) { reportStorage('load', key); return false; } // never replace data that could not be read
+  try { localStorage.setItem(key, JSON.stringify(items)); return true; } catch { reportStorage('save', key); return false; }
+}
+
 export class Repetition {
   constructor(storageKey = 'ot.srs') {
     this.storageKey = storageKey;
-    this.items = {};
     this.deadline = null; // ms; positions last seen before it are due by then at the latest
-    try { this.items = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch { this.items = {}; }
-    this.migrate();
+    const { items, ok } = loadItems(storageKey);
+    this.items = items;
+    this.loadOk = ok;
+    if (ok) this.migrate();
   }
 
   // Positions saved with the older, longer steps keep their box and get a due time from the
@@ -32,9 +61,7 @@ export class Repetition {
     try { localStorage.setItem(this.storageKey + '.v', VERSION); } catch { /* ignore */ }
   }
 
-  save() {
-    try { localStorage.setItem(this.storageKey, JSON.stringify(this.items)); } catch { /* storage full or blocked */ }
-  }
+  save() { return saveItems(this.storageKey, this.items, this.loadOk); }
 
   // When the item is due, with the deadline applied.
   dueAt(it) {
@@ -117,16 +144,16 @@ export class Repetition {
 export class PositionStats {
   constructor(storageKey = 'ot.posStats') {
     this.storageKey = storageKey;
-    this.items = {};
-    try { this.items = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch { this.items = {}; }
+    const { items, ok } = loadItems(storageKey);
+    this.items = items;
+    this.loadOk = ok;
   }
 
-  save() {
-    try { localStorage.setItem(this.storageKey, JSON.stringify(this.items)); } catch { /* storage full or blocked */ }
-  }
+  save() { return saveItems(this.storageKey, this.items, this.loadOk); }
 
   // Once: mistakes counted by the review list before this history existed.
   importMisses(srs) {
+    if (!this.loadOk || !srs.loadOk) return;
     const flag = this.storageKey + '.imported';
     try { if (localStorage.getItem(flag)) return; } catch { return; }
     for (const [key, it] of Object.entries(srs.items)) {

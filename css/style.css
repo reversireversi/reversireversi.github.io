@@ -569,6 +569,25 @@ button.save-review { padding: 1px 6px; font-size: 10px; line-height: 1.4; border
 .pos-history .hist .undated td { font-style: italic; }
 .pos-history #hist-all { margin-top: 4px; }
 
+/* Backup (Train and Endgame) */
+.backup-box { margin-top: 18px; }
+.backup-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.backup-actions button { flex: 1 1 140px; }
+.backup-info { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.backup-info .bad { color: #ff6f61; }
+.backup-info .good { color: #2fbf7a; }
+
+/* Storage problem warning, kept in view at the bottom of the screen */
+.storage-warn {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 16px; padding-bottom: max(10px, env(safe-area-inset-bottom));
+  box-shadow: 0 -4px 16px rgba(0,0,0,.4);
+  background: #8f2a22; color: #fff; font-size: 14px;
+}
+.storage-warn[hidden] { display: none; }
+.storage-warn span { flex: 1 1 260px; }
+
 /* Training history: a page of its own instead of the board and panel */
 .history-open { margin-top: 18px; }
 .history-open button { width: 100%; }
