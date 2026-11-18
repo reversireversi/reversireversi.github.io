@@ -633,6 +633,13 @@ const srsEnd = new Repetition('ot.srsEnd');
 const posStats = new PositionStats(); // Train: answers per position (top 10 mistakes)
 posStats.importMisses(srsBook);
 const srsNow = () => (mode === 'endgame' ? srsEnd : srsBook);
+// Positions not in the book, added from Analyse ("Still add?"): in Train's review list, keyed by
+// the board ('x' + Edax board; book keys are hex), checked by exact Edax solve and played to the end.
+const exactKey = (st) => 'x' + toEdaxBoard(st.board, st.toMove).replace(' ', '');
+const isExactKey = (k) => typeof k === 'string' && k[0] === 'x';
+const EXACT_WARN_MOVE = 36; // earlier than this, exact solving can take minutes
+// True while the line is scored by exact solve: Endgame, or a Train review of such a position.
+const exactLine = () => mode === 'endgame' || (mode === 'train' && !!T.review && isExactKey(T.review.key));
 const END_SCORES = [-6, -4, -2, 0, 2, 4, 6, 8];
 const T = {
   phase: 'idle',          // idle | user | checking | trainer | wrong | end
@@ -806,10 +813,18 @@ function paintPct() {
   for (const el of boardEl.querySelectorAll('.pct')) el.remove();
   const note = $('pos-history');
   note.hidden = true;
-  if (mode !== 'analyse' || !pctKey || !book) return;
+  if (mode !== 'analyse' || !pctKey) return;
   const st = cur();
-  const hit = book.find(st.board, st.toMove);
-  if (!hit || book.recordKey(hit.index) !== pctKey) return;
+  let sym = 0; // positions not in the book keep their squares as played
+  if (isExactKey(pctKey)) {
+    if (st.over || exactKey(st) !== pctKey) return;
+  } else {
+    if (!book) return;
+    const hit = book.find(st.board, st.toMove);
+    if (!hit || book.recordKey(hit.index) !== pctKey) return;
+    sym = hit.symmetry;
+  }
+  const hit = { symmetry: sym };
   const it = posStats.get(pctKey) || { c: 0, w: 0, x: 0, mv: {} };
   const total = Object.values(it.mv).reduce((a, b) => a + b, 0);
   note.hidden = false;
@@ -941,7 +956,7 @@ function restoreTrainTab() {
   // A move that was being checked is asked again; a pending trainer move is played now.
   if (T.phase === 'checking') userTurn();
   else if (T.phase === 'trainer') trainerTurn();
-  else if (T.phase === 'user' && mode === 'endgame') solve(cur());
+  else if (T.phase === 'user' && exactLine()) solve(cur());
   return true;
 }
 
@@ -1243,7 +1258,8 @@ function startLine() {
       cursor = states.length - 1;
       T.reviewPly = cursor;
       render();
-      userTurn(`${rev.label}: you play <b>${colorName(item.color)}</b>.`);
+      userTurn(`${rev.label}: you play <b>${colorName(item.color)}</b>.`
+        + (isExactKey(item.key) ? ' Not in the book: exact Edax scores, played to the end.' : ''));
       return;
     }
   }
@@ -1371,7 +1387,7 @@ function userTurn(intro = '') {
   const st = cur();
   if (st.over) { endLine('Game over.'); return; }
   if (st.toMove !== T.lineColor) { trainerTurn(); return; }
-  if (mode === 'endgame') solve(st); // start solving while you think
+  if (exactLine()) solve(st); // start solving while you think
   else {
     const info = probe(st);
     if (!info || !info.moves.some((m) => m.sq < 64)) { endLine(OUT_OF_BOOK); return; }
@@ -1393,7 +1409,7 @@ function trainerTurn() {
   if (st.toMove === T.lineColor) { userTurn(); return; }
   // Reviews only: the line ends once the reviewed position is answered.
   if (T.reviewsOnly && T.review && cursor > T.reviewPly) { endLine('Review done.'); return; }
-  if (mode === 'endgame') { endTrainerTurn(st); return; }
+  if (exactLine()) { endTrainerTurn(st); return; }
   const info = probe(st);
   if (!info) { endLine(OUT_OF_BOOK); return; }
   const cands = opponentCandidates(info, T.margin, T.floor);
@@ -1405,7 +1421,8 @@ function trainerTurn() {
   }, 350);
 }
 
-// Train Endgame: the trainer plays a move within T.endMargin discs of the exact best.
+// Exact lines: the trainer plays a move within T.endMargin (Endgame) or T.margin (Train,
+// "Opponent within") discs of the exact best.
 async function endTrainerTurn(st) {
   const id = T.lineId;
   T.phase = 'trainer';
@@ -1415,11 +1432,11 @@ async function endTrainerTurn(st) {
     const slow = setTimeout(() => { if (T.lineId === id && cur() === st) setFeedback(lastHtml() + 'Trainer is thinking…'); }, 600);
     r = await solve(st);
     clearTimeout(slow);
-    if (T.lineId !== id || cur() !== st || mode !== 'endgame') return;
+    if (T.lineId !== id || cur() !== st || !exactLine()) return;
     if (!r.stale) break;
   }
   if (!r.moves || !r.moves.length) { setFeedback('Engine error: ' + (r.error || 'no result'), 'bad'); showButtons('btn-train-next'); return; }
-  const pick = pickRandom(withinMargin(r.moves, T.endMargin));
+  const pick = pickRandom(withinMargin(r.moves, mode === 'endgame' ? T.endMargin : T.margin));
   T.timer = setTimeout(() => {
     if (T.lineId !== id) return;
     pushMove(pick.sq);
@@ -1473,7 +1490,7 @@ async function trainClick(sq) {
   if (T.phase !== 'user') return;
   const st = cur();
   if (!playMove(st, sq)) return;
-  if (mode === 'endgame') { endClick(st, sq); return; }
+  if (exactLine()) { endClick(st, sq); return; }
   const info = probe(st);
   T.phase = 'checking';
   setFeedback('Checking…');
@@ -1611,7 +1628,7 @@ async function endClick(st, sq) {
   let r;
   for (let tries = 0; tries < 3; tries++) {
     r = await solve(st);
-    if (T.lineId !== id || mode !== 'endgame' || cur() !== st) { clearTimeout(slow); return; }
+    if (T.lineId !== id || !exactLine() || cur() !== st) { clearTimeout(slow); return; }
     if (!r.stale) break;
   }
   clearTimeout(slow);
@@ -1620,12 +1637,19 @@ async function endClick(st, sq) {
   const best = r.moves[0].score;
   const correct = mine.score === best;
   const ply = cursor + 1;
-  const key = toEdaxBoard(st.board, st.toMove);
-  const undo = T.retrying ? null : { key, prev: srsEnd.get(key) };
+  const train = mode === 'train'; // a Train review of a position not in the book
+  const srs = srsNow();
+  const key = train ? exactKey(st) : toEdaxBoard(st.board, st.toMove);
+  const undo = T.retrying ? null : { key, prev: srs.get(key) };
   if (!T.retrying) {
-    srsEnd.record(key, lineSoFar(), T.lineColor, correct);
-    T.line.total++; T.endSession.total++;
-    if (correct) { T.line.correct++; T.endSession.correct++; }
+    if (train) { // Train's review list and answer history (Most mistakes, Training history)
+      const fixed = recordReview(srs, key, lineSoFar(), T.lineColor, correct);
+      posStats.record(key, lineSoFar(), T.lineColor, correct ? 'c' : 'x', sq);
+      if (fixed) posStats.flag(key, FLAG_FIXED);
+    } else srs.record(key, lineSoFar(), T.lineColor, correct);
+    const sess = train ? T.session : T.endSession;
+    T.line.total++; sess.total++;
+    if (correct) { T.line.correct++; sess.correct++; }
     recordMoveStat(ply, correct);
   }
   renderTrainStats();
@@ -1635,7 +1659,8 @@ async function endClick(st, sq) {
     T.retrying = false;
     const others = bestMoves.filter((m) => m.sq !== sq).map((m) => sqName(m.sq));
     T.lastWarn = false;
-    T.last = `<b>${ply}.${sqName(sq)} ${fmtScore(mine.score)}</b>: correct.` + (others.length ? ` Also best: ${others.join(', ')}` : '');
+    T.last = `<b>${ply}.${sqName(sq)} ${fmtScore(mine.score)}</b>: correct.` + (others.length ? ` Also best: ${others.join(', ')}.` : '')
+      + (train ? mistakeCount(key, true, lineSoFar()) : '');
     setFeedback(`<b>${sqName(sq)} ${fmtScore(mine.score)}</b>: correct.`
       + (others.length ? `<span class="sub">Also best: ${others.join(', ')}</span>` : ''), 'good');
     pushMove(sq);
@@ -1656,7 +1681,8 @@ async function endClick(st, sq) {
   const loss = best - mine.score;
   setFeedback(`<b>${sqName(sq)} ${fmtScore(mine.score)}</b> loses ${loss} disc${loss === 1 ? '' : 's'}.`
     + ` Best: <b>${bestMoves.map((m) => sqName(m.sq) + ' ' + fmtScore(m.score)).join(', ')}</b>`
-    + '<span class="sub">Score source: Edax exact solve. This position is saved for review.</span>', 'bad');
+    + '<span class="sub">Score source: Edax exact solve. This position is saved for review.</span>'
+    + (train ? mistakeCount(key) : ''), 'bad');
   showButtons('btn-train-retry', 'btn-train-accept', 'btn-train-best', 'btn-train-next', 'btn-train-copy');
 }
 
@@ -1807,7 +1833,7 @@ $('btn-train-best').onclick = () => {
   restoreAnchor();
   clearMarks();
   let pick;
-  if (mode === 'endgame') { // exact scores kept with the mistake
+  if (exactLine()) { // exact scores kept with the mistake
     if (!T.anchor || !T.anchor.marks) return;
     pick = T.anchor.marks.list[0];
   } else {
@@ -1892,20 +1918,30 @@ function showAddReview(html) {
   el.hidden = !html;
   el.pos = html ? cur() : null;
 }
+// Not in the book: asks "Still add?" first; such positions are trained with exact Edax scores
+// and played to the end (warned below move EXACT_WARN_MOVE, where solving can take minutes).
 $('btn-add-review').onclick = () => {
   const st = cur();
-  const hit = book && !st.over ? book.find(st.board, st.toMove) : null;
+  if (!book) { showAddReview('Not added: open your book first.'); return; }
+  if (st.over) { showAddReview('Not added: the game is over.'); return; }
+  const hit = book.find(st.board, st.toMove);
   if (!hit) {
-    showAddReview(book ? 'Not added: this position is not in the book.' : 'Not added: open your book first.');
+    const n = cursor + 1; // your move number there
+    showAddReview('This position is not in the book. Still add? '
+      + `<button class="small" data-exact="1">Yes</button> <button class="small" data-box0="">No</button>`
+      + '<span class="sub">In Train it is checked by exact Edax solve and played to the end.'
+      + (n < EXACT_WARN_MOVE ? ` <b>Move ${n} is early: each exact solve can take minutes.</b>` : '') + '</span>');
     return;
   }
-  const key = book.recordKey(hit.index);
-  const color = st.toMove, side = color === BLACK ? 'Black' : 'White';
+  addToReview(book.recordKey(hit.index), st.toMove);
+};
+function addToReview(key, color, note = '') {
+  const side = color === BLACK ? 'Black' : 'White';
   const it = srsBook.get(key);
   if (!it) {
     srsBook.add(key, lineSoFar(), color);
     renderTrainStats();
-    showAddReview(`Added to review: you play <b>${side}</b> here, Box 0, due in 10 min.`);
+    showAddReview(`Added to review: you play <b>${side}</b> here, Box 0, due in 10 min.${note}`);
   } else if ((it.box || 0) === 0) {
     showAddReview('Already in review (Box 0).');
   } else {
@@ -1913,8 +1949,13 @@ $('btn-add-review').onclick = () => {
       + `<button class="small" data-box0="${key}" data-color="${color}">Yes</button> `
       + '<button class="small" data-box0="">No</button>');
   }
-};
+}
 $('add-review').addEventListener('click', (e) => {
+  if (e.target.closest('[data-exact]')) {
+    const st = cur();
+    addToReview(exactKey(st), st.toMove, ' Exact Edax scores, played to the end.');
+    return;
+  }
   const b = e.target.closest('[data-box0]');
   if (!b) return;
   if (!b.dataset.box0) { showAddReview(''); return; }
