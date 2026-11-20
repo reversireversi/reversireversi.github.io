@@ -665,6 +665,8 @@ const T = {
   endFrom: store.get('endFrom', 39),      // games start after a move in endFrom..endTo
   endTo: store.get('endTo', 40),
   endNoReviews: store.get('endNoReviews', false), // Endgame: only new positions
+  endShowScores: store.get('endShowScores', false), // Endgame: start score and scores after correct moves
+  trainShowScores: store.get('trainShowScores', false), // Train: scores after correct moves
   endEqual: store.get('endEqual', true),  // Endgame: each ticked score equally likely (else by book counts)
   lineId: 0,
   reviewsOnly: store.get('reviewsOnly', false),
@@ -682,6 +684,14 @@ const T = {
 };
 const colorName = (p) => (p === BLACK ? 'Black' : 'White');
 const prefColors = () => (T.colorPref === 3 ? [BLACK, WHITE] : [T.colorPref]);
+
+// "Show scores" off: scores in the feedback (class "sc") are hidden while you play and shown
+// again once the line has ended (feedback class "end"). Train and Endgame have their own setting.
+const sc = (v) => `<span class="sc"> ${fmtScore(v)}</span>`;
+function applyShowScores() {
+  const show = mode === 'endgame' ? T.endShowScores : T.trainShowScores;
+  document.body.classList.toggle('hide-scores', !show);
+}
 
 function setFeedback(html, kind = '') {
   const el = $('train-feedback');
@@ -1099,6 +1109,7 @@ function setMode(m) {
   if (tabState[m]) { states = tabState[m].states; cursor = tabState[m].cursor; }
   document.body.classList.toggle('training', isTrain());
   document.body.classList.toggle('endgame', m === 'endgame');
+  applyShowScores();
   $('tab-analyse').classList.toggle('active', m === 'analyse');
   $('tab-train').classList.toggle('active', m === 'train');
   $('tab-endgame').classList.toggle('active', m === 'endgame');
@@ -1471,7 +1482,7 @@ async function startEndgame() {
     return;
   }
   solveCache.set(r.board, Promise.resolve(r.solved)); // already solved: your first move is checked at once
-  play(r.line, (you, n) => `New endgame from move ${n}: you play ${you}, score <b>${fmtScore(r.score)}</b>.`);
+  play(r.line, (you, n) => `New endgame from move ${n}: you play ${you}<span class="sc">, score <b>${fmtScore(r.score)}</b></span>.`);
   prepNext();
 }
 
@@ -1654,10 +1665,10 @@ async function trainClick(sq) {
     const others = info.moves.filter((m) => m.sq < 64 && m.score === best && m.sq !== sq).map((m) => sqName(m.sq));
     const verdict = warn ? 'correct with warning' : 'correct';
     T.lastWarn = !!warn;
-    T.last = `<b>${cursor + 1}.${sqName(sq)} ${fmtScore(r.score)}</b>: ${verdict}.`
+    T.last = `<b>${cursor + 1}.${sqName(sq)}${sc(r.score)}</b>: ${verdict}.`
       + (warn ? ` ${warn}` : others.length ? ` Also best: ${others.join(', ')}.` : '')
       + mistakeCount(key, true, lineSoFar());
-    setFeedback(`<b>${sqName(sq)} ${fmtScore(r.score)}</b>: ${verdict}.`
+    setFeedback(`<b>${sqName(sq)}${sc(r.score)}</b>: ${verdict}.`
       + (warn ? `<span class="sub">${warn}</span>`
         : others.length ? `<span class="sub">Also best: ${others.join(', ')}</span>` : ''), warn ? 'warn' : 'good');
     pushMove(sq);
@@ -1791,9 +1802,10 @@ async function endClick(st, sq) {
     T.retrying = false;
     const others = bestMoves.filter((m) => m.sq !== sq).map((m) => sqName(m.sq));
     T.lastWarn = false;
-    T.last = `<b>${ply}.${sqName(sq)} ${fmtScore(mine.score)}</b>: correct.` + (others.length ? ` Also best: ${others.join(', ')}.` : '')
+    const shown = sc(mine.score); // hidden while playing when Show scores is off
+    T.last = `<b>${ply}.${sqName(sq)}${shown}</b>: correct.` + (others.length ? ` Also best: ${others.join(', ')}.` : '')
       + (train ? mistakeCount(key, true, lineSoFar()) : '');
-    setFeedback(`<b>${sqName(sq)} ${fmtScore(mine.score)}</b>: correct.`
+    setFeedback(`<b>${sqName(sq)}${shown}</b>: correct.`
       + (others.length ? `<span class="sub">Also best: ${others.join(', ')}</span>` : ''), 'good');
     pushMove(sq);
     T.phase = 'trainer';
@@ -1869,6 +1881,11 @@ $('opt-end-equal').onchange = (e) => {
   if (mode === 'endgame') prepNext();
 };
 // No reviews (Endgame) and Reviews only exclude each other.
+$('opt-end-showscores').checked = T.endShowScores;
+$('opt-end-showscores').onchange = (e) => { T.endShowScores = e.target.checked; store.set('endShowScores', T.endShowScores); applyShowScores(); };
+$('opt-train-showscores').checked = T.trainShowScores;
+$('opt-train-showscores').onchange = (e) => { T.trainShowScores = e.target.checked; store.set('trainShowScores', T.trainShowScores); applyShowScores(); };
+applyShowScores();
 $('opt-end-noreviews').checked = T.endNoReviews;
 $('opt-end-noreviews').onchange = (e) => {
   T.endNoReviews = e.target.checked;
@@ -1976,7 +1993,7 @@ $('btn-train-best').onclick = () => {
   }
   T.retrying = false;
   T.phase = 'trainer';
-  T.last = `<b>${cursor + 1}.${sqName(pick.sq)} ${fmtScore(pick.score)}</b>: best move played.`;
+  T.last = `<b>${cursor + 1}.${sqName(pick.sq)}${sc(pick.score)}</b>: best move played.`;
   T.lastWarn = false;
   showButtons('btn-train-next');
   pushMove(pick.sq);

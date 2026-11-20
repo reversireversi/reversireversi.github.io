@@ -407,6 +407,8 @@ body.training .mv { cursor: default; }
 .feedback.good { background: rgba(47,191,122,.14); border-color: rgba(47,191,122,.5); }
 .feedback.bad { background: rgba(255,111,97,.12); border-color: rgba(255,111,97,.5); }
 .feedback.end { background: rgba(120,160,255,.10); border-color: rgba(120,160,255,.4); }
+/* Show scores off: hide scores while playing; they come back once the line has ended */
+body.hide-scores .feedback:not(.end) .sc { display: none; }
 .feedback.warn { background: rgba(240,190,60,.13); border-color: rgba(240,190,60,.55); }
 .feedback .last.warn { color: #f3d27a; }
 .feedback .sub { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; }
