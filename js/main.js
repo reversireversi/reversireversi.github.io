@@ -343,9 +343,11 @@ function umigameReady(b) {
   }
   delete $('book-meta').dataset.umi;
   renderBookMeta();
-  if (mode === 'train' && T.phase === 'wrong' && T.anchor && T.anchor.marks) { // add the numbers to the mistake view
-    const st = T.anchor.states[T.anchor.cursor], old = T.anchor.marks.list;
-    const fresh = bookList(st, probe(st));
+  const wrongSt = mode === 'train' && T.phase === 'wrong' && T.anchor && T.anchor.marks ? T.anchor.states[T.anchor.cursor] : null;
+  const wrongInfo = wrongSt && probe(wrongSt); // none for a position not in the book
+  if (wrongInfo) { // add the numbers to the mistake view
+    const st = wrongSt, old = T.anchor.marks.list;
+    const fresh = bookList(st, wrongInfo);
     for (const e of old) if (!fresh.find((f) => f.sq === e.sq)) fresh.push(e); // the wrong move's Edax score
     T.anchor.marks.list = fresh;
   }
@@ -598,8 +600,14 @@ async function requestAnalysis() {
   const st = cur();
   if (st.over) { engine.cancel(); setEngineStatus('Game over'); return; }
   if (mode === 'endgame') { // playing on in an endgame: exact scores
-    const r = await solve(st);
+    let r = await solve(st);
     if (token !== anaToken || !r.moves) return;
+    if (!r.res) { // scores came from the device: the engine lines need a solve of their own
+      const res = await engine.analyze(toEdaxBoard(st.board, st.toMove), 60, 60);
+      if (token !== anaToken || res.stale || res.error || !res.moves) return;
+      r = solvedFrom(res);
+      solveCache.set(toEdaxBoard(st.board, st.toMove), Promise.resolve(r));
+    }
     showAnalysis(r.res, false);
     return;
   }
@@ -838,22 +846,31 @@ $('import-file').onchange = async (e) => {
     const keys = Object.keys(imp).filter((key) => !(key in s.items));
     return { s, imp, keys, label, kept: Object.keys(imp).length - keys.length };
   });
+  // Saved exact solves: the ones this device does not have are added (the same position always
+  // has the same exact scores).
+  const impSolves = parse('ot.exactScores');
+  const newSolves = Object.keys(impSolves).filter((k) => !(k in savedSolves) && typeof impSolves[k] === 'string');
   // Other entries (settings, answers by move…) only where this device has none.
-  const others = Object.keys(b.data).filter((k) => k.startsWith('ot.') && k !== 'ot.lastExport'
+  const others = Object.keys(b.data).filter((k) => k.startsWith('ot.') && k !== 'ot.lastExport' && k !== 'ot.exactScores'
     && !stores.some(([, sk]) => sk === k) && typeof b.data[k] === 'string' && localStorage.getItem(k) === null);
-  const total = adds.reduce((n, a) => n + a.keys.length, 0);
+  const total = adds.reduce((n, a) => n + a.keys.length, 0) + newSolves.length;
   if (!total && !others.length) {
     alert('Nothing to add: everything in this backup is already on this device.');
     return;
   }
   const when = b.exported ? fmtWhen(b.exported) : 'unknown date';
   const lines = adds.map((a) => `• ${a.keys.length} new ${a.label}${a.kept ? ` (${a.kept} already here, kept as they are)` : ''}`);
+  if (newSolves.length) lines.push(`• ${newSolves.length} saved exact solves`);
   if (!confirm(`Import the backup from ${when}?\n\n${lines.join('\n')}\n\nNothing on this device is changed or deleted; only new positions are added.`)) return;
   let ok = true;
   for (const a of adds) {
     if (!a.keys.length) continue;
     for (const key of a.keys) a.s.items[key] = a.imp[key];
     ok = a.s.save() && ok;
+  }
+  if (newSolves.length) {
+    for (const k of newSolves) savedSolves[k] = impSolves[k];
+    try { localStorage.setItem('ot.exactScores', JSON.stringify(savedSolves)); } catch { ok = false; }
   }
   for (const k of others) { try { localStorage.setItem(k, b.data[k]); } catch { ok = false; } }
   if (!ok) { alert('Could not save everything (storage full or blocked). Nothing already on this device was changed.'); return; }
@@ -1311,9 +1328,31 @@ async function prepareStart(token) {
 // first), res } or { stale } / { error }.
 const solveCache = new Map();
 const solvedFrom = (res) => ({ moves: res.moves.map((m) => ({ sq: moveSq(m.move), score: m.score })).sort((a, b) => b.score - a.score), res });
+// Exact scores of answered positions are also saved on the device ('ot.exactScores',
+// { edaxBoard: 'sq:score,…' best first }), so a review (Train out of book, or Endgame) needs no
+// new solve after the app was closed. Positions no longer in a review list are dropped at start.
+const savedSolves = store.get('exactScores', {});
+{
+  const keep = (b) => srsBook.has('x' + b.replace(' ', '')) || srsEnd.has(b); // see exactKey
+  let dropped = false;
+  for (const b of Object.keys(savedSolves)) if (!keep(b)) { delete savedSolves[b]; dropped = true; }
+  if (dropped) store.set('exactScores', savedSolves);
+}
+function rememberSolve(st, moves) {
+  const board = toEdaxBoard(st.board, st.toMove);
+  const v = moves.map((m) => `${m.sq}:${m.score}`).join(',');
+  if (savedSolves[board] === v) return;
+  savedSolves[board] = v;
+  store.set('exactScores', savedSolves);
+}
 function solve(st) {
   const board = toEdaxBoard(st.board, st.toMove);
   let p = solveCache.get(board);
+  if (!p && savedSolves[board]) { // solved before: no engine needed (res: null)
+    const moves = savedSolves[board].split(',').map((s) => { const [sq, score] = s.split(':').map(Number); return { sq, score }; });
+    p = Promise.resolve({ moves, res: null });
+    solveCache.set(board, p);
+  }
   if (!p) {
     ensureEngine();
     p = engine.analyze(board, 60, 60).then((res) => {
@@ -1777,6 +1816,7 @@ async function endClick(st, sq) {
   clearTimeout(slow);
   const mine = r.moves && r.moves.find((m) => m.sq === sq);
   if (!mine) { T.phase = 'user'; setFeedback('Could not score that move. Try again.', 'bad'); return; }
+  rememberSolve(st, r.moves); // kept while the position is in a review list
   const best = r.moves[0].score;
   const correct = mine.score === best;
   const ply = cursor + 1;
