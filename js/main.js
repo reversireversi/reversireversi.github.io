@@ -1489,7 +1489,20 @@ function renderExplore() {
       + (T.phase === 'wrong' ? ' Retry, Accept and Play best & continue go back to it.' : '');
 }
 
+// Next line on a review that was not answered moves on: that position is passed over for
+// SKIP_MS (it stays due, its box does not change). Kept only while the app is open.
+const SKIP_MS = 10 * 60 * 1000;
+const skippedUntil = new Map(); // review key -> time
+function skipUnanswered() {
+  const r = T.review;
+  if (!r || !r.key) return;
+  const now = srsNow().get(r.key);
+  if (now && now.last === r.last && now.seen === r.seen) skippedUntil.set(r.key, Date.now() + SKIP_MS);
+}
+const isSkipped = (key) => (skippedUntil.get(key) || 0) > Date.now();
+
 function startLine() {
+  skipUnanswered();
   clearTimeout(T.timer);
   T.phase = 'idle';
   T.anchor = null;
@@ -1539,10 +1552,16 @@ function startLine() {
 // saved position seen longest ago. null if there is none. label: text for the feedback.
 function nextReview(srs, colors) {
   const due = srs.due(colors);
-  if (due.length) return { item: due[0], label: `Review (${due.length} due)` };
+  const dueNow = due.filter((it) => !isSkipped(it.key)); // skipped with Next line: later
+  if (dueNow.length) return { item: dueNow[0], label: `Review (${due.length} due)` };
   if (!T.reviewsOnly) return null;
+  if (due.length) { // Reviews only and every due one passed over: the one passed over longest ago
+    const first = [...due].sort((a, b) => skippedUntil.get(a.key) - skippedUntil.get(b.key))[0];
+    return { item: first, label: `Review (${due.length} due, all passed over with Next line)` };
+  }
   const saved = srs.saved(colors);
-  return saved.length ? { item: saved[0], label: `Review (none due; saved position seen longest ago, ${saved.length} saved)` } : null;
+  const pick = saved.find((it) => !isSkipped(it.key)) || saved[0]; // all skipped: still review
+  return pick ? { item: pick, label: `Review (none due; saved position seen longest ago, ${saved.length} saved)` } : null;
 }
 function noReviews() {
   setFeedback('No saved positions to review yet. Untick <b>Reviews only</b> to train new lines.');
