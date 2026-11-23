@@ -1338,8 +1338,8 @@ const savedSolves = store.get('exactScores', {});
   for (const b of Object.keys(savedSolves)) if (!keep(b)) { delete savedSolves[b]; dropped = true; }
   if (dropped) store.set('exactScores', savedSolves);
 }
-function rememberSolve(st, moves) {
-  const board = toEdaxBoard(st.board, st.toMove);
+function rememberSolve(st, moves) { rememberBoardSolve(toEdaxBoard(st.board, st.toMove), moves); }
+function rememberBoardSolve(board, moves) {
   const v = moves.map((m) => `${m.sq}:${m.score}`).join(',');
   if (savedSolves[board] === v) return;
   savedSolves[board] = v;
@@ -1353,6 +1353,10 @@ function solve(st) {
     p = Promise.resolve({ moves, res: null });
     solveCache.set(board, p);
   }
+  if (!p && bgBusy && bgBusy.board === board) { // being solved in the background: wait for it
+    p = bgBusy.promise.then((r) => (r.stale || r.error ? (solveCache.delete(board), solve(st)) : r));
+    solveCache.set(board, p);
+  }
   if (!p) {
     ensureEngine();
     p = engine.analyze(board, 60, 60).then((res) => {
@@ -1363,6 +1367,81 @@ function solve(st) {
   }
   return p;
 }
+
+// ---------- Background solving ----------
+// A second Edax worker solves saved review positions that have no exact scores yet (Train out of
+// book, and Endgame), one at a time, fewest empty squares first, so a review needs no wait. Results
+// are saved like answered positions ('ot.exactScores'). Only positions with at most BG_MAX_EMPTIES
+// empty squares. A solve that is stopped (setting off, or a phone putting the app away) starts
+// again from the beginning next time.
+const BG_MAX_EMPTIES = 28; // from move 32 on; earlier positions would take hours
+const coarse = matchMedia('(pointer: coarse)').matches; // a phone or tablet
+let bgOn = store.get('bgSolve', true);
+let bgEngine = null;
+let bgBusy = null; // { board, started, promise }
+const bgFailed = new Set();
+const emptiesOf = (b) => { let n = 0; for (let i = 0; i < 64; i++) if (b[i] === '-') n++; return n; };
+function bgQueue() {
+  const boards = new Set();
+  for (const k of Object.keys(srsBook.items)) if (k[0] === 'x' && k.length === 66) boards.add(k.slice(1, 65) + ' ' + k[65]); // see exactKey
+  for (const k of Object.keys(srsEnd.items)) boards.add(k);
+  return [...boards]
+    .filter((b) => !savedSolves[b] && !solveCache.has(b) && !bgFailed.has(b) && !(bgBusy && bgBusy.board === b) && emptiesOf(b) <= BG_MAX_EMPTIES)
+    .sort((a, b) => emptiesOf(a) - emptiesOf(b));
+}
+function bgStop() {
+  if (!bgEngine) { renderBgStatus(); return; }
+  const e = bgEngine;
+  bgEngine = null;
+  e.abort(e.lastId()); // the running solve resolves as stale
+  e.worker.terminate();
+  renderBgStatus();
+}
+function bgKick() {
+  if (!bgOn || bgBusy || (coarse && document.hidden)) { renderBgStatus(); return; }
+  const next = bgQueue()[0];
+  if (!next) { bgStop(); renderBgStatus(); return; } // nothing to do: free the worker's memory
+  if (!bgEngine) bgEngine = new Engine(() => {});
+  const board = next;
+  const promise = bgEngine.analyze(board, 60, 60).then((res) => {
+    if (res.stale) return { stale: true };
+    if (res.error || !res.moves || !res.moves.length) { bgFailed.add(board); return { error: res.error || 'no result' }; }
+    const s = solvedFrom(res);
+    rememberBoardSolve(board, s.moves);
+    return s;
+  });
+  bgBusy = { board, started: Date.now(), promise };
+  renderBgStatus();
+  promise.then(() => {
+    if (bgBusy && bgBusy.board === board) bgBusy = null;
+    setTimeout(bgKick, 0);
+  });
+}
+let bgTimer = 0;
+function renderBgStatus() {
+  const el = $('bg-solve');
+  if (!el) return;
+  clearInterval(bgTimer);
+  if (!bgOn) { el.hidden = true; return; }
+  const left = bgQueue().length + (bgBusy ? 1 : 0);
+  const solved = Object.keys(savedSolves).length;
+  el.hidden = !bgBusy && !left && !solved;
+  if (!bgBusy) { el.textContent = left ? `Background solve: ${left} waiting.` : `Background solve: all saved positions solved (${solved}).`; return; }
+  const show = () => {
+    const s = Math.floor((Date.now() - bgBusy.started) / 1000);
+    el.textContent = `Background solve: ${left} left · solving one with ${emptiesOf(bgBusy.board)} empty squares (${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')})`;
+  };
+  show();
+  bgTimer = setInterval(() => { if (bgBusy) show(); else clearInterval(bgTimer); }, 1000);
+}
+// Phones stop a hidden app's work anyway (and may drop the worker without telling), so there
+// the solve is stopped when the app is put away and started again when it comes back. On a
+// computer it keeps going in a hidden or minimised window.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (coarse) bgStop(); } else bgKick();
+});
+setInterval(bgKick, 15000); // pick up positions saved since
+setTimeout(bgKick, 3000);   // after the app has started
 
 // Play a move during training (keeps the move list consistent).
 function pushMove(sq) {
@@ -1967,6 +2046,12 @@ function syncReviewOpts() {
   $('opt-new-pct').closest('label').classList.toggle('disabled', T.reviewsOnly);
 }
 syncReviewOpts();
+$('opt-bg-solve').checked = bgOn;
+$('opt-bg-solve').onchange = (e) => {
+  bgOn = e.target.checked;
+  store.set('bgSolve', bgOn);
+  if (bgOn) bgKick(); else bgStop();
+};
 $('opt-train-cap').value = String(T.cap);
 $('opt-train-cap').onchange = (e) => { T.cap = Number(e.target.value); store.set('trainCap', T.cap); };
 $('btn-train-start').onclick = startLine;

@@ -134,6 +134,7 @@
             <select id="opt-new-pct"></select>
           </label>
           <label title="Only drill saved positions: due ones first, then the rest, the longest unseen first. The line ends after the reviewed position."><input type="checkbox" id="opt-reviews-only"> Reviews only</label>
+          <label title="While the app is open, a second Edax solves saved positions that need exact scores (out of the book, and Endgame), so reviews of them start at once. Positions from move 32 on, fewest empty squares first; on a phone it pauses when the app is put away."><input type="checkbox" id="opt-bg-solve"> Solve in background</label>
         </div>
         <div class="feedback" id="train-feedback">Open your book, then press Start.</div>
         <div class="train-actions">
@@ -146,6 +147,7 @@
         </div>
         <div class="train-explore" id="train-explore"></div>
         <div class="train-stats" id="train-stats"></div>
+        <div class="train-stats" id="bg-solve" hidden></div>
       </div>
 
       <!-- Move navigation: always in Analyse; in Train while playing on after a mistake or out of book -->
