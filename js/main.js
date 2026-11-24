@@ -943,6 +943,26 @@ function openWorst(key, line = '') {
   render();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+// "Open position in Analyze" (bottom of Train and Endgame): the position on the board, with the
+// moves before and after it, and Edax analysis switched on. The training line is kept as it was
+// (also an unanswered move: going back continues there).
+function openInAnalyse() {
+  const line = states.slice(), at = cursor, st = cur();
+  let key = null; // Train: your answers in this position are shown as in "Most mistakes"
+  if (mode === 'train' && !st.over) {
+    const hit = book && book.find(st.board, st.toMove);
+    key = hit ? book.recordKey(hit.index) : exactKey(st);
+  }
+  setMode('analyse');
+  pctKey = key;
+  histAll = false;
+  states = line;
+  cursor = at;
+  if (!analysisOn) { analysisOn = true; $('opt-edax').checked = true; store.set('edax', true); }
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+$('btn-open-analyse').onclick = openInAnalyse;
 // Each answer in this position, newest first: date and time, move, result.
 let histAll = false; // "Show all" pressed
 const HIST_SHOWN = 20;
