@@ -579,6 +579,17 @@ button.save-review { padding: 1px 6px; font-size: 10px; line-height: 1.4; border
 .backup-info .bad { color: #ff6f61; }
 .backup-info .good { color: #2fbf7a; }
 
+/* Background solve list (bottom of Train and Endgame) */
+.bg-box { margin-top: 18px; }
+.bg-box > button { width: 100%; }
+.bg-list { margin-top: 8px; font-size: 13px; }
+.bg-list[hidden] { display: none; }
+.bg-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid rgba(255,255,255,.08); }
+.bg-row a { flex: 1 1 200px; color: inherit; }
+.bg-row .bg-st { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.bg-row button { padding: 2px 10px; font-size: 12px; }
+.bg-empty { color: var(--muted); font-size: 12px; }
+
 /* Storage problem warning, kept in view at the bottom of the screen */
 .storage-warn {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;

@@ -718,9 +718,12 @@ function renderTrainStats() {
 }
 function renderStatsLine() {
   const end = mode === 'endgame';
-  const c = srsNow().count(end ? [BLACK, WHITE] : prefColors());
+  const srs = srsNow(), colors = end ? [BLACK, WHITE] : prefColors();
+  const c = srs.count(colors);
+  const held = srs.due(colors).filter((it) => waitsForSolve(srs, it.key)).length;
   const s = end ? T.endSession : T.session;
-  let text = `Session: ${s.correct}/${s.total} correct · Reviews due: ${c.due} · Saved positions: ${c.total}`;
+  let text = `Session: ${s.correct}/${s.total} correct · Reviews due: ${c.due - held}`
+    + (held ? ` (+${held} waiting for background solve)` : '') + ` · Saved positions: ${c.total}`;
   if (end && endPos && endPos.byKey) text += ` · Book positions to start from: ${endCount().toLocaleString()}`;
   $('train-stats').textContent = text;
 }
@@ -1371,23 +1374,54 @@ function solve(st) {
 // ---------- Background solving ----------
 // A second Edax worker solves saved review positions that have no exact scores yet (Train out of
 // book, and Endgame), one at a time, fewest empty squares first, so a review needs no wait. Results
-// are saved like answered positions ('ot.exactScores'). Only positions with at most BG_MAX_EMPTIES
-// empty squares. A solve that is stopped (setting off, or a phone putting the app away) starts
-// again from the beginning next time.
-const BG_MAX_EMPTIES = 28; // from move 32 on; earlier positions would take hours
+// are saved like answered positions ('ot.exactScores'). A solve that is stopped (setting off, or a
+// phone putting the app away) starts again from the beginning next time. While a position waits
+// for its solve, Train and Endgame leave it out of the reviews (see waitsForSolve). A position can
+// be taken out of background solving ("Stop" in the list at the bottom of Train): it is then
+// reviewed as before, solved when shown.
 const coarse = matchMedia('(pointer: coarse)').matches; // a phone or tablet
 let bgOn = store.get('bgSolve', true);
 let bgEngine = null;
 let bgBusy = null; // { board, started, promise }
 const bgFailed = new Set();
+const bgStopped = new Set(store.get('bgStopped', [])); // boards taken out with Stop
+{ // drop boards no longer in a review list, as for savedSolves
+  const n = bgStopped.size;
+  for (const b of bgStopped) if (!srsBook.has('x' + b.replace(' ', '')) && !srsEnd.has(b)) bgStopped.delete(b);
+  if (bgStopped.size !== n) store.set('bgStopped', [...bgStopped]);
+}
 const emptiesOf = (b) => { let n = 0; for (let i = 0; i < 64; i++) if (b[i] === '-') n++; return n; };
+// The board a review needs exact scores for (Train out of book, Endgame), else null.
+const solveBoardOf = (srs, key) => (srs === srsEnd ? key : key[0] === 'x' && key.length === 66 ? key.slice(1, 65) + ' ' + key[65] : null); // see exactKey
+// True while Background solve still has this review to solve: it is left out of the reviews until then.
+// Not when the setting is off, the solve failed or the position was stopped (those are solved
+// when reviewed, as before).
+function waitsForSolve(srs, key) {
+  const b = bgOn && solveBoardOf(srs, key);
+  return !!b && !savedSolves[b] && !solveCache.has(b) && !bgFailed.has(b) && !bgStopped.has(b);
+}
+// Every review position that needs exact scores and has none saved: [{ board, srs, key, line }].
+function bgPositions() {
+  const out = new Map();
+  for (const [k, it] of Object.entries(srsBook.items)) {
+    const b = solveBoardOf(srsBook, k);
+    if (b && !savedSolves[b]) out.set(b, { board: b, srs: srsBook, key: k, line: it.line });
+  }
+  for (const [k, it] of Object.entries(srsEnd.items)) if (!savedSolves[k] && !out.has(k)) out.set(k, { board: k, srs: srsEnd, key: k, line: it.line });
+  return [...out.values()];
+}
 function bgQueue() {
-  const boards = new Set();
-  for (const k of Object.keys(srsBook.items)) if (k[0] === 'x' && k.length === 66) boards.add(k.slice(1, 65) + ' ' + k[65]); // see exactKey
-  for (const k of Object.keys(srsEnd.items)) boards.add(k);
-  return [...boards]
-    .filter((b) => !savedSolves[b] && !solveCache.has(b) && !bgFailed.has(b) && !(bgBusy && bgBusy.board === b) && emptiesOf(b) <= BG_MAX_EMPTIES)
+  return bgPositions().map((p) => p.board)
+    .filter((b) => !solveCache.has(b) && !bgFailed.has(b) && !bgStopped.has(b) && !(bgBusy && bgBusy.board === b))
     .sort((a, b) => emptiesOf(a) - emptiesOf(b));
+}
+// Stop: take the position out of background solving (its running solve is stopped). Solve again: undo.
+function bgSetStopped(board, stop) {
+  if (stop) bgStopped.add(board); else { bgStopped.delete(board); bgFailed.delete(board); }
+  store.set('bgStopped', [...bgStopped]);
+  if (stop && bgBusy && bgBusy.board === board) bgStop(); // the next one starts when this one ends
+  else bgKick();
+  renderStatsLine();
 }
 function bgStop() {
   if (!bgEngine) { renderBgStatus(); return; }
@@ -1414,11 +1448,50 @@ function bgKick() {
   renderBgStatus();
   promise.then(() => {
     if (bgBusy && bgBusy.board === board) bgBusy = null;
+    renderStatsLine(); // a held-back review may be ready now
     setTimeout(bgKick, 0);
   });
 }
 let bgTimer = 0;
+const fmtClock = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+// The list at the bottom of Train: every position that needs exact scores and has none yet.
+let bgListOpen = false;
+function renderBgList() {
+  const all = bgPositions();
+  $('btn-bg-list').textContent = `${bgListOpen ? 'Hide' : 'Show'} positions being background solved (${all.length})`;
+  const el = $('bg-list');
+  el.hidden = !bgListOpen;
+  if (!bgListOpen) return;
+  const rank = (p) => (bgBusy && bgBusy.board === p.board ? 0 : bgStopped.has(p.board) ? 3 : bgFailed.has(p.board) ? 2 : 1);
+  all.sort((a, b) => rank(a) - rank(b) || emptiesOf(a.board) - emptiesOf(b.board));
+  if (!all.length) { el.innerHTML = '<div class="bg-empty">No saved positions waiting for exact scores.</div>'; return; }
+  el.innerHTML = all.map((p) => {
+    const r = rank(p);
+    const status = r === 0 ? `solving <span id="bg-row-clock">${fmtClock(Date.now() - bgBusy.started)}</span>`
+      : r === 3 ? 'stopped (solved when reviewed)'
+      : r === 2 ? 'failed (solved when reviewed)'
+      : solveCache.has(p.board) ? 'being solved in the review'
+      : bgOn ? 'waiting' : 'waiting (Solve in background is off)';
+    const moveNo = (p.line.match(/[a-h][1-8]/gi) || []).length + 1;
+    const side = p.board[65] === 'X' ? 'Black' : 'White';
+    const btn = r === 3 || r === 2 ? `<button data-b="${p.board}" data-act="again">Solve again</button>`
+      : `<button data-b="${p.board}" data-act="stop">Stop</button>`;
+    return `<div class="bg-row"><a href="#" data-b="${p.board}" data-act="open">${p.srs === srsEnd ? 'Endgame' : 'Train'} · move ${moveNo}, ${side} to play · ${emptiesOf(p.board)} empty</a>`
+      + `<span class="bg-st">${status}</span>${btn}</div>`;
+  }).join('');
+}
+$('btn-bg-list').onclick = () => { bgListOpen = !bgListOpen; renderBgList(); };
+$('bg-list').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act]');
+  if (!t) return;
+  e.preventDefault();
+  const p = bgPositions().find((q) => q.board === t.dataset.b);
+  if (!p) { renderBgList(); return; }
+  if (t.dataset.act === 'open') openWorst(p.srs === srsBook ? p.key : '', p.line);
+  else bgSetStopped(p.board, t.dataset.act === 'stop');
+});
 function renderBgStatus() {
+  renderBgList();
   const el = $('bg-solve');
   if (!el) return;
   clearInterval(bgTimer);
@@ -1428,8 +1501,10 @@ function renderBgStatus() {
   el.hidden = !bgBusy && !left && !solved;
   if (!bgBusy) { el.textContent = left ? `Background solve: ${left} waiting.` : `Background solve: all saved positions solved (${solved}).`; return; }
   const show = () => {
-    const s = Math.floor((Date.now() - bgBusy.started) / 1000);
-    el.textContent = `Background solve: ${left} left · solving one with ${emptiesOf(bgBusy.board)} empty squares (${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')})`;
+    const clock = fmtClock(Date.now() - bgBusy.started);
+    el.textContent = `Background solve: ${left} left · solving one with ${emptiesOf(bgBusy.board)} empty squares (${clock})`;
+    const row = $('bg-row-clock');
+    if (row) row.textContent = clock;
   };
   show();
   bgTimer = setInterval(() => { if (bgBusy) show(); else clearInterval(bgTimer); }, 1000);
@@ -1538,7 +1613,7 @@ function startLine() {
     }
   }
   T.review = null;
-  if (T.reviewsOnly) { noReviews(); return; }
+  if (T.reviewsOnly) { noReviews(srsBook, prefColors()); return; }
   T.lineColor = T.colorPref === 3 ? (Math.random() < 0.5 ? BLACK : WHITE) : T.colorPref;
   states = [initialState()];
   cursor = 0;
@@ -1550,21 +1625,30 @@ function startLine() {
 
 // The position to review next: the first due one, or with "Reviews only" and none due, the
 // saved position seen longest ago. null if there is none. label: text for the feedback.
+// Positions still waiting for Background solve are left out until they are solved.
 function nextReview(srs, colors) {
-  const due = srs.due(colors);
+  const all = srs.due(colors);
+  const due = all.filter((it) => !waitsForSolve(srs, it.key));
+  const held = all.length - due.length;
+  const heldNote = held ? `, ${held} more waiting for background solve` : '';
   const dueNow = due.filter((it) => !isSkipped(it.key)); // skipped with Next line: later
-  if (dueNow.length) return { item: dueNow[0], label: `Review (${due.length} due)` };
+  if (dueNow.length) return { item: dueNow[0], label: `Review (${due.length} due${heldNote})` };
   if (!T.reviewsOnly) return null;
   if (due.length) { // Reviews only and every due one passed over: the one passed over longest ago
     const first = [...due].sort((a, b) => skippedUntil.get(a.key) - skippedUntil.get(b.key))[0];
-    return { item: first, label: `Review (${due.length} due, all passed over with Next line)` };
+    return { item: first, label: `Review (${due.length} due, all passed over with Next line${heldNote})` };
   }
-  const saved = srs.saved(colors);
+  const saved = srs.saved(colors).filter((it) => !waitsForSolve(srs, it.key));
   const pick = saved.find((it) => !isSkipped(it.key)) || saved[0]; // all skipped: still review
-  return pick ? { item: pick, label: `Review (none due; saved position seen longest ago, ${saved.length} saved)` } : null;
+  const none = held ? `${held} due, all waiting for background solve` : 'none due';
+  return pick ? { item: pick, label: `Review (${none}; saved position seen longest ago, ${saved.length} solved and saved)` } : null;
 }
-function noReviews() {
-  setFeedback('No saved positions to review yet. Untick <b>Reviews only</b> to train new lines.');
+function noReviews(srs, colors) {
+  const waiting = srs.saved(colors).filter((it) => waitsForSolve(srs, it.key)).length;
+  setFeedback(waiting
+    ? (waiting === 1 ? 'Your saved position is waiting for background solve; it comes' : `All ${waiting} saved positions are waiting for background solve; they come`)
+      + ' up here once solved. Untick <b>Reviews only</b> to train new lines meanwhile.'
+    : 'No saved positions to review yet. Untick <b>Reviews only</b> to train new lines.');
   showButtons('btn-train-start');
 }
 
@@ -1589,7 +1673,7 @@ async function startEndgame() {
     if (play(rev.item.line, (you, n) => `${rev.label}: you play ${you}, move ${n}.`)) { prepNext(); return; }
   }
   T.review = null;
-  if (T.reviewsOnly) { noReviews(); return; }
+  if (T.reviewsOnly) { noReviews(srsEnd, [BLACK, WHITE]); return; }
   if (!endPos) findEndPositions();
   if (endPos.error) { setFeedback('Could not read start positions from the book: ' + endPos.error, 'bad'); showButtons('btn-train-start'); return; }
   if (!endPos.byKey) { T.phase = 'waiting'; showEndProgress(); showButtons(); return; }
@@ -2070,6 +2154,7 @@ $('opt-bg-solve').onchange = (e) => {
   bgOn = e.target.checked;
   store.set('bgSolve', bgOn);
   if (bgOn) bgKick(); else bgStop();
+  renderStatsLine(); // held-back reviews count as due again when the setting is off
 };
 $('opt-train-cap').value = String(T.cap);
 $('opt-train-cap').onchange = (e) => { T.cap = Number(e.target.value); store.set('trainCap', T.cap); };

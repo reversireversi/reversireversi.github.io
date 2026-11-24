@@ -134,7 +134,7 @@
             <select id="opt-new-pct"></select>
           </label>
           <label title="Only drill saved positions: due ones first, then the rest, the longest unseen first. The line ends after the reviewed position."><input type="checkbox" id="opt-reviews-only"> Reviews only</label>
-          <label title="While the app is open, a second Edax solves saved positions that need exact scores (out of the book, and Endgame), so reviews of them start at once. Positions from move 32 on, fewest empty squares first; on a phone it pauses when the app is put away."><input type="checkbox" id="opt-bg-solve"> Solve in background</label>
+          <label title="While the app is open, a second Edax solves saved positions that need exact scores (out of the book, and Endgame), so reviews of them start at once. Fewest empty squares first; until solved they are left out of the reviews (see the list at the bottom, where a position can be stopped). On a phone it pauses when the app is put away."><input type="checkbox" id="opt-bg-solve"> Solve in background</label>
         </div>
         <div class="feedback" id="train-feedback">Open your book, then press Start.</div>
         <div class="train-actions">
@@ -230,6 +230,13 @@
         </div>
         <div class="backup-info" id="backup-info"></div>
         <div class="backup-info" id="storage-info"></div>
+      </div>
+
+      <!-- Saved positions waiting for exact scores (Background solve), each with Stop / Solve again -->
+      <div class="train-only bg-box">
+        <div class="section-title">Background solve</div>
+        <button id="btn-bg-list" class="wide">Show positions being background solved</button>
+        <div class="bg-list" id="bg-list" hidden></div>
       </div>
     </aside>
   </main>
